@@ -35,6 +35,30 @@ class MinioResource(ConfigurableResource):
         except Exception:
             return False
 
+    def read_parquet(self, bucket: str, dataset_path: str, filter_expr=None) -> "pa.Table":
+        """Read a Hive-partitioned Parquet dataset from MinIO via s3fs + pyarrow.
+
+        dataset_path is the prefix below the bucket root, e.g. "ohlcv.bar".
+        filter_expr is an optional pyarrow.dataset Expression for partition pruning.
+        """
+        import pyarrow as pa  # noqa: F401
+        import pyarrow.dataset as ds
+        import s3fs
+
+        fs = s3fs.S3FileSystem(
+            key=self.access_key,
+            secret=self.secret_key,
+            endpoint_url=self.endpoint,
+            use_ssl=self.endpoint.startswith("https://"),
+        )
+        dataset = ds.dataset(
+            f"{bucket}/{dataset_path}",
+            filesystem=fs,
+            format="parquet",
+            partitioning="hive",
+        )
+        return dataset.to_table(filter=filter_expr)
+
 
 class SparkClusterResource(ConfigurableResource):
     """Submits batch jobs via `docker exec` into the running spark-master container."""

@@ -1,7 +1,18 @@
-from dagster import AssetDep, AssetExecutionContext, AutomationCondition, MetadataValue, RetryPolicy, asset
+from dagster import (
+    AssetCheckExecutionContext,
+    AssetCheckResult,
+    AssetCheckSeverity,
+    AssetDep,
+    AssetExecutionContext,
+    AutomationCondition,
+    MetadataValue,
+    RetryPolicy,
+    asset,
+    asset_check,
+)
 
 from dagster_project.partitions import daily_partitions
-from dagster_project.resources import SparkClusterResource
+from dagster_project.resources import MinioResource, SparkClusterResource
 
 
 @asset(
@@ -25,3 +36,48 @@ def daily_digest(context: AssetExecutionContext, spark: SparkClusterResource) ->
     target_date = context.partition_key
     context.log.info("Running DigestJob for partition %s", target_date)
     spark.submit(["digest", "--date", target_date])
+
+
+@asset_check(
+    asset=daily_digest,
+    blocking=False,
+    description=(
+        "Warns when any ranking category (gainer, loser, volume) is absent from the digest partition. "
+        "An empty category means no data met the filter criteria for that day."
+    ),
+)
+def digest_all_categories_present(
+    context: AssetCheckExecutionContext,
+    minio: MinioResource,
+) -> AssetCheckResult:
+    import pyarrow.compute as pc
+    import pyarrow.dataset as ds
+    from datetime import date
+
+    d = date.fromisoformat(context.partition_key)
+    year, month, day = d.strftime("%Y"), d.strftime("%m"), d.strftime("%d")
+
+    table = minio.read_parquet(
+        minio.market_analysis_bucket,
+        "digest",
+        (ds.field("year") == year) & (ds.field("month") == month) & (ds.field("day") == day),
+    )
+
+    expected = {"gainer", "loser", "volume"}
+    if len(table) == 0:
+        present = set()
+    else:
+        present = set(pc.unique(table.column("category")).to_pylist())
+
+    missing = sorted(expected - present)
+    counts  = {cat: int(pc.sum(pc.equal(table.column("category"), cat)).as_py() or 0)
+               for cat in expected} if len(table) > 0 else {cat: 0 for cat in expected}
+
+    return AssetCheckResult(
+        passed=len(missing) == 0,
+        severity=AssetCheckSeverity.WARN,
+        metadata={
+            "missing_categories": str(missing) if missing else "none",
+            **{f"{cat}_count": counts[cat] for cat in sorted(expected)},
+        },
+    )
