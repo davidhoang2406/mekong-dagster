@@ -6,6 +6,7 @@ from dagster_project.assets import digest, ohlcv, price_snapshots, screener, tec
 from dagster_project.resources import MinioResource, SparkClusterResource
 from dagster_project.schedules import (daily_market_close, ohlcv_daily_job,
                                         weekly_screener, weekly_screener_job)
+from dagster_project.sensors import telegram_failure_sensor
 
 defs = Definitions(
     assets=load_assets_from_modules([price_snapshots, ohlcv, technical, digest, screener]),
@@ -23,4 +24,5 @@ defs = Definitions(
     },
     jobs=[ohlcv_daily_job, weekly_screener_job],
     schedules=[daily_market_close, weekly_screener],
+    sensors=[telegram_failure_sensor],
 )
