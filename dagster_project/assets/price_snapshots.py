@@ -8,6 +8,13 @@ from dagster_project.resources import MinioResource
     partitions_def=daily_partitions,
     group_name="batch_pipeline",
     description="Raw price snapshots (Avro) produced by StorageConsumer — external to Dagster.",
+    metadata={
+        "storage": MetadataValue.text("MinIO — market-data bucket"),
+        "format": MetadataValue.text("Avro"),
+        "partition_scheme": MetadataValue.text("price.snapshot/asset_class={val}/year={y}/month={m}/day={d}/"),
+        "producer": MetadataValue.text("mekong-kafka / StorageConsumer"),
+        "asset_classes": MetadataValue.text("stock, crypto"),
+    },
 )
 def price_snapshots(context: AssetExecutionContext, minio: MinioResource) -> ObserveResult:
     date       = context.partition_key
