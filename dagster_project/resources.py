@@ -25,6 +25,16 @@ class MinioResource(ConfigurableResource):
         except Exception:
             return False
 
+    def object_exists(self, bucket: str, key: str) -> bool:
+        from minio.error import S3Error
+        try:
+            self._client().stat_object(bucket, key)
+            return True
+        except S3Error:
+            return False
+        except Exception:
+            return False
+
 
 class SparkClusterResource(ConfigurableResource):
     """Submits batch jobs via `docker exec` into the running spark-master container."""
