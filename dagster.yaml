@@ -1,0 +1,9 @@
+storage:
+  sqlite:
+    base_dir: /opt/dagster/dagster_home/storage
+
+telemetry:
+  enabled: false
+load_from:
+  - python_package:
+      package_name: dagster_project

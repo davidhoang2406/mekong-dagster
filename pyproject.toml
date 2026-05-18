@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dagster_project"
+version = "0.1.0"
+dependencies = [
+    "dagster==1.13.5",
+    "dagster-webserver==1.13.5",
+    "minio>=7.2",
+    "python-dotenv>=1.0",
+    "docker>=7.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dagster_project*"]
+
+[tool.dagster]
+module_name = "dagster_project"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
