@@ -1,6 +1,6 @@
 from dagster import AssetSelection, ScheduleDefinition, define_asset_job
 
-from dagster_project.partitions import daily_partitions
+from dagster_project.partitions import daily_partitions, weekly_partitions
 
 ohlcv_daily_job = define_asset_job(
     name="ohlcv_daily_job",
@@ -12,5 +12,18 @@ daily_market_close = ScheduleDefinition(
     name="daily_market_close",
     cron_schedule="0 16 * * 1-5",
     job=ohlcv_daily_job,
+    execution_timezone="Asia/Ho_Chi_Minh",
+)
+
+weekly_screener_job = define_asset_job(
+    name="weekly_screener_job",
+    selection=AssetSelection.assets("screener_results"),
+)
+
+# Fires at 08:00 Asia/Ho_Chi_Minh every Monday — weekly fundamentals refresh.
+weekly_screener = ScheduleDefinition(
+    name="weekly_screener",
+    cron_schedule="0 8 * * 1",
+    job=weekly_screener_job,
     execution_timezone="Asia/Ho_Chi_Minh",
 )
