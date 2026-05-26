@@ -47,7 +47,11 @@ from dagster_project.resources import MinioResource, SparkClusterResource
 )
 def technical_indicators(context: AssetExecutionContext, spark: SparkClusterResource) -> None:
     context.log.info("Running TechnicalJob for partition %s", context.partition_key)
-    spark.submit(["technical"])
+    args = ["technical"]
+    if context.run.tags.get("full_recompute") == "true":
+        args.append("--full-recompute")
+        context.log.info("Full recompute requested — ignoring checkpoint")
+    spark.submit(args)
 
 
 @asset_check(
