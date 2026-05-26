@@ -3,10 +3,13 @@ import os
 from dagster import Definitions, load_asset_checks_from_modules, load_assets_from_modules
 
 from dagster_project.assets import digest, ohlcv, price_snapshots, screener, technical
-from dagster_project.resources import MinioResource, SparkClusterResource
+from dagster_project.resources import KafkaAdminResource, MinioResource, SparkClusterResource
+from dagster_project.kafka_pipeline_jobs import (start_kafka_pipeline_job,
+                                                  stop_kafka_pipeline_job)
 from dagster_project.schedules import (daily_market_close, ohlcv_daily_job,
                                         weekly_screener, weekly_screener_job)
-from dagster_project.sensors import raw_data_expiry_sensor, telegram_failure_sensor
+from dagster_project.sensors import (kafka_pipeline_health_sensor,
+                                      raw_data_expiry_sensor, telegram_failure_sensor)
 
 _asset_modules = [price_snapshots, ohlcv, technical, digest, screener]
 
@@ -24,8 +27,11 @@ defs = Definitions(
         "spark": SparkClusterResource(
             container_name=os.getenv("SPARK_CONTAINER_NAME", "spark-master"),
         ),
+        "kafka_admin": KafkaAdminResource(
+            bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092"),
+        ),
     },
-    jobs=[ohlcv_daily_job, weekly_screener_job],
+    jobs=[ohlcv_daily_job, weekly_screener_job, start_kafka_pipeline_job, stop_kafka_pipeline_job],
     schedules=[daily_market_close, weekly_screener],
-    sensors=[telegram_failure_sensor, raw_data_expiry_sensor],
+    sensors=[telegram_failure_sensor, raw_data_expiry_sensor, kafka_pipeline_health_sensor],
 )

@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 
 import docker as docker_sdk
 from dagster import ConfigurableResource
@@ -58,6 +59,88 @@ class MinioResource(ConfigurableResource):
             partitioning="hive",
         )
         return dataset.to_table(filter=filter_expr)
+
+
+class KafkaAdminResource(ConfigurableResource):
+    """Checks Kafka consumer group lag via KafkaAdminClient."""
+    bootstrap_servers: str
+
+    def consumer_group_lag(self, group_id: str) -> int:
+        """Total uncommitted messages across all partitions for group_id.
+
+        Returns -1 when the group has no committed offsets (not yet started or
+        was reset). Returns 0 when fully caught up.
+        """
+        from kafka import KafkaAdminClient, KafkaConsumer
+
+        admin = KafkaAdminClient(
+            bootstrap_servers=self.bootstrap_servers,
+            client_id="dagster-lag-check",
+            request_timeout_ms=5000,
+        )
+        try:
+            committed = admin.list_consumer_group_offsets(group_id)
+        except Exception as exc:
+            log.warning("KafkaAdminClient failed for group %s: %s", group_id, exc)
+            return -1
+        finally:
+            admin.close()
+
+        if not committed:
+            return -1
+
+        consumer = KafkaConsumer(
+            bootstrap_servers=self.bootstrap_servers,
+            request_timeout_ms=5000,
+        )
+        try:
+            end_offsets = consumer.end_offsets(list(committed.keys()))
+        except Exception as exc:
+            log.warning("Failed to fetch end offsets: %s", exc)
+            return -1
+        finally:
+            consumer.close()
+
+        return sum(
+            max(0, end_offsets.get(tp, om.offset) - om.offset)
+            for tp, om in committed.items()
+        )
+
+    def container_running(self, container_name: str) -> Optional[str]:
+        """Returns the container status string, or None if not found."""
+        try:
+            client = docker_sdk.from_env()
+            return client.containers.get(container_name).status
+        except docker_sdk.errors.NotFound:
+            return None
+        except Exception as exc:
+            log.warning("Docker status check failed for %s: %s", container_name, exc)
+            return None
+
+    def start_container(self, container_name: str) -> None:
+        """Start a stopped container (no-op if already running)."""
+        client = docker_sdk.from_env()
+        container = client.containers.get(container_name)
+        if container.status != "running":
+            container.start()
+            log.info("Started container %s", container_name)
+        else:
+            log.info("Container %s already running", container_name)
+
+    def stop_container(self, container_name: str, timeout: int = 30) -> None:
+        """Send SIGTERM to a container and wait up to timeout seconds.
+
+        timeout=30 gives the storage consumer time to flush its current batch
+        before SIGKILL is sent. Producers have their own backoff logic and
+        commit state is in Kafka, so 30s is conservative but safe.
+        """
+        client = docker_sdk.from_env()
+        container = client.containers.get(container_name)
+        if container.status == "running":
+            container.stop(timeout=timeout)
+            log.info("Stopped container %s", container_name)
+        else:
+            log.info("Container %s was not running (status: %s)", container_name, container.status)
 
 
 class SparkClusterResource(ConfigurableResource):
