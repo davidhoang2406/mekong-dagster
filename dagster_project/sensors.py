@@ -14,7 +14,7 @@ from dagster import (
     sensor,
 )
 
-from dagster_project.resources import MinioResource
+from dagster_project.resources import KafkaAdminResource, MinioResource
 
 
 def _send_telegram(token: str, chat_id: str, text: str) -> None:
@@ -141,4 +141,77 @@ def raw_data_expiry_sensor(context: SensorEvaluationContext) -> SensorResult | S
     return SensorResult(
         run_requests=[],
         cursor=json.dumps(sorted(alerted)),
+    )
+
+
+_KAFKA_DAEMONS = ["stock-price-producer", "crypto-price-producer", "storage-consumer"]
+_LAG_WARN_THRESHOLD = 50_000  # messages behind before alerting
+
+
+@sensor(
+    name="kafka_pipeline_health_sensor",
+    description=(
+        "Checks that the three Kafka daemon containers are running and that the "
+        "storage consumer group lag stays below the warning threshold. Alerts via "
+        "Telegram on state transitions; deduplicates via cursor so each issue fires "
+        "only once until it recovers."
+    ),
+    minimum_interval_seconds=300,
+    required_resource_keys={"kafka_admin"},
+)
+def kafka_pipeline_health_sensor(context: SensorEvaluationContext) -> SensorResult | SkipReason:
+    kafka_admin: KafkaAdminResource = context.resources.kafka_admin
+    token   = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    # Cursor is a JSON list of active alert keys; cleared when the condition recovers.
+    alerted: set[str] = set(json.loads(context.cursor or "[]"))
+    new_alerts: list[str] = []
+
+    # ── Container health ──────────────────────────────────────────────────────
+    for name in _KAFKA_DAEMONS:
+        key    = f"down:{name}"
+        status = kafka_admin.container_running(name)
+
+        if status is None:
+            if key not in alerted:
+                msg = f"⚠️ *Kafka daemon missing*\nContainer `{name}` was not found — was it removed?"
+                if token and chat_id:
+                    _send_telegram(token, chat_id, msg)
+                context.log.warning("Container %s not found", name)
+                new_alerts.append(key)
+        elif status != "running":
+            if key not in alerted:
+                msg = f"⚠️ *Kafka daemon not running*\nContainer `{name}` is `{status}`."
+                if token and chat_id:
+                    _send_telegram(token, chat_id, msg)
+                context.log.warning("Container %s is %s", name, status)
+                new_alerts.append(key)
+        else:
+            alerted.discard(key)  # recovered — clear so the next failure re-alerts
+
+    # ── Consumer group lag ────────────────────────────────────────────────────
+    lag     = kafka_admin.consumer_group_lag("storage")
+    lag_key = "high_lag:storage"
+
+    if lag >= _LAG_WARN_THRESHOLD:
+        if lag_key not in alerted:
+            msg = (
+                f"⚠️ *Kafka Consumer Lag*\n"
+                f"Group `storage` lag is `{lag:,}` messages — "
+                f"storage consumer may be falling behind or stalled."
+            )
+            if token and chat_id:
+                _send_telegram(token, chat_id, msg)
+            context.log.warning("Storage consumer group lag: %d", lag)
+            new_alerts.append(lag_key)
+    elif lag >= 0:
+        alerted.discard(lag_key)  # recovered
+
+    alerted.update(new_alerts)
+
+    return SensorResult(
+        run_requests=[],
+        cursor=json.dumps(sorted(alerted)),
+        skip_reason=None if new_alerts else "All Kafka daemons running; consumer lag within threshold.",
     )
