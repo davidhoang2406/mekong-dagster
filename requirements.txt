@@ -4,6 +4,7 @@ dagster-postgres==0.29.5
 dagster-k8s==0.29.5
 psycopg2-binary
 kubernetes>=29.0
+kafka-python>=2.0
 minio>=7.2
 python-dotenv>=1.0
 pytest>=7.4
