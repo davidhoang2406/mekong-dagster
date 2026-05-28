@@ -9,7 +9,8 @@ from dagster_project.kafka_pipeline_jobs import (start_kafka_pipeline_job,
 from dagster_project.schedules import (daily_market_close, ohlcv_daily_job,
                                         weekly_screener, weekly_screener_job)
 from dagster_project.sensors import (kafka_pipeline_health_sensor,
-                                      raw_data_expiry_sensor, telegram_failure_sensor)
+                                      raw_data_expiry_sensor, telegram_daily_success_sensor,
+                                      telegram_failure_sensor)
 
 _asset_modules = [price_snapshots, ohlcv, technical, digest, screener]
 
@@ -33,5 +34,6 @@ defs = Definitions(
     },
     jobs=[ohlcv_daily_job, weekly_screener_job, start_kafka_pipeline_job, stop_kafka_pipeline_job],
     schedules=[daily_market_close, weekly_screener],
-    sensors=[telegram_failure_sensor, raw_data_expiry_sensor, kafka_pipeline_health_sensor],
+    sensors=[telegram_failure_sensor, telegram_daily_success_sensor,
+             raw_data_expiry_sensor, kafka_pipeline_health_sensor],
 )

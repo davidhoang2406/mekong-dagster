@@ -58,6 +58,37 @@ def telegram_failure_sensor(context: RunStatusSensorContext) -> None:
     context.log.info("Telegram failure alert sent for run %s", run.run_id[:8])
 
 
+@run_status_sensor(
+    run_status=DagsterRunStatus.SUCCESS,
+    name="telegram_on_daily_success",
+    monitored_jobs=[],
+    description="Sends a Telegram message when ohlcv_daily_job completes successfully.",
+)
+def telegram_daily_success_sensor(context: RunStatusSensorContext) -> None:
+    run = context.dagster_run
+    if run.job_name != "ohlcv_daily_job":
+        return
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        context.log.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — skipping notification")
+        return
+
+    partition = run.tags.get("dagster/partition", "—")
+    dagster_url = os.getenv("DAGSTER_WEBSERVER_URL", "http://localhost:3000")
+
+    text = (
+        f"✅ *OHLCV daily bars ready*\n"
+        f"*Partition:* `{partition}`\n"
+        f"*Run ID:* `{run.run_id[:8]}`\n"
+        f"*Dashboard:* {dagster_url}/runs/{run.run_id}"
+    )
+
+    _send_telegram(token, chat_id, text)
+    context.log.info("Telegram success notification sent for run %s", run.run_id[:8])
+
+
 @sensor(
     name="raw_data_expiry_sensor",
     description=(
