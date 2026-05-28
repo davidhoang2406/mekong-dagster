@@ -81,13 +81,10 @@ def ohlcv_no_invalid_prices(
     table = minio.read_parquet(
         minio.market_analysis_bucket, "ohlcv.bar", _ohlcv_filter(context.partition_key)
     )
+    le = pc.less_equal
     bad_prices = int(pc.sum(
-        pc.or_(
-            pc.less_equal(table.column("open"),  0),
-            pc.less_equal(table.column("high"),  0),
-            pc.less_equal(table.column("low"),   0),
-            pc.less_equal(table.column("close"), 0),
-        )
+        pc.or_(pc.or_(le(table.column("open"), 0), le(table.column("high"), 0)),
+               pc.or_(le(table.column("low"),  0), le(table.column("close"), 0)))
     ).as_py() or 0)
     bad_volume = int(pc.sum(
         pc.less(table.column("volume"), 0)
