@@ -1,10 +1,18 @@
 import logging
 import os
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 from dagster import ConfigurableResource
 from minio import Minio
+
+
+@dataclass
+class PodHealth:
+    phase: str          # "running", "pending", "failed", "unknown"
+    ready: bool         # container ready flag from k8s
+    restart_count: int  # cumulative container restarts
 
 log = logging.getLogger(__name__)
 
@@ -110,8 +118,8 @@ class KafkaAdminResource(ConfigurableResource):
             for tp, om in committed.items()
         )
 
-    def container_running(self, app_label: str) -> Optional[str]:
-        """Returns lowercase pod phase ('running', 'pending', 'failed') or None if no pod found."""
+    def pod_health(self, app_label: str) -> Optional[PodHealth]:
+        """Returns PodHealth for the newest pod with app={app_label}, or None if not found."""
         try:
             k8s = _k8s()
             pods = k8s.CoreV1Api().list_namespaced_pod(
@@ -121,7 +129,14 @@ class KafkaAdminResource(ConfigurableResource):
             if not pods.items:
                 return None
             pod = max(pods.items, key=lambda p: p.metadata.creation_timestamp)
-            return (pod.status.phase or "unknown").lower()
+            phase = (pod.status.phase or "unknown").lower()
+            ready = False
+            restart_count = 0
+            if pod.status.container_statuses:
+                cs = pod.status.container_statuses[0]
+                ready = bool(cs.ready)
+                restart_count = int(cs.restart_count or 0)
+            return PodHealth(phase=phase, ready=ready, restart_count=restart_count)
         except Exception as exc:
             log.warning("K8s pod check failed for %s: %s", app_label, exc)
             return None

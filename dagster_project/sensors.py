@@ -144,17 +144,35 @@ def raw_data_expiry_sensor(context: SensorEvaluationContext) -> SensorResult | S
     )
 
 
-_KAFKA_DAEMONS = ["stock-price-producer", "crypto-price-producer", "storage-consumer"]
-_LAG_WARN_THRESHOLD = 50_000  # messages behind before alerting
+_KAFKA_DAEMONS        = ["stock-price-producer", "crypto-price-producer", "storage-consumer"]
+_LAG_WARN_THRESHOLD   = 50_000   # absolute lag before alerting
+_LAG_DELTA_WARN       = 1_000    # lag growth between ticks that signals a stall
+_RESTART_WARN         = 3        # cumulative restarts considered unhealthy
+
+
+def _load_cursor(raw: str | None) -> dict:
+    """Parse sensor cursor, migrating from the old list format."""
+    if not raw:
+        return {"alerts": [], "prev_lag": -1, "restart_counts": {}}
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return {"alerts": data, "prev_lag": -1, "restart_counts": {}}
+        return {
+            "alerts":         data.get("alerts", []),
+            "prev_lag":       data.get("prev_lag", -1),
+            "restart_counts": data.get("restart_counts", {}),
+        }
+    except (json.JSONDecodeError, AttributeError):
+        return {"alerts": [], "prev_lag": -1, "restart_counts": {}}
 
 
 @sensor(
     name="kafka_pipeline_health_sensor",
     description=(
-        "Checks that the three Kafka daemon containers are running and that the "
-        "storage consumer group lag stays below the warning threshold. Alerts via "
-        "Telegram on state transitions; deduplicates via cursor so each issue fires "
-        "only once until it recovers."
+        "Checks pod phase, container readiness, restart count, and consumer group lag "
+        "for all three Kafka pipeline daemons. Alerts via Telegram on state transitions; "
+        "deduplicates via cursor so each issue fires only once until it recovers."
     ),
     minimum_interval_seconds=300,
     required_resource_keys={"kafka_admin"},
@@ -164,41 +182,79 @@ def kafka_pipeline_health_sensor(context: SensorEvaluationContext) -> SensorResu
     token   = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-    # Cursor is a JSON list of active alert keys; cleared when the condition recovers.
-    alerted: set[str] = set(json.loads(context.cursor or "[]"))
-    new_alerts: list[str] = []
+    cursor_data   = _load_cursor(context.cursor)
+    alerted       = set(cursor_data["alerts"])
+    prev_lag      = cursor_data["prev_lag"]
+    prev_restarts = cursor_data["restart_counts"]
 
-    # ── Container health ──────────────────────────────────────────────────────
+    new_alerts:   list[str] = []
+    new_restarts: dict      = {}
+
+    # ── Pod health (phase + readiness + restart count) ────────────────────────
     for name in _KAFKA_DAEMONS:
-        key    = f"down:{name}"
-        status = kafka_admin.container_running(name)
+        health = kafka_admin.pod_health(name)
 
-        if status is None:
-            if key not in alerted:
-                msg = f"⚠️ *Kafka daemon missing*\nContainer `{name}` was not found — was it removed?"
+        current_restarts      = health.restart_count if health else 0
+        new_restarts[name]    = current_restarts
+        down_key              = f"down:{name}"
+        not_ready_key         = f"not_ready:{name}"
+        restarted_key         = f"restarted:{name}"
+
+        if health is None or health.phase != "running":
+            status_str = health.phase if health else "not found"
+            if down_key not in alerted:
+                msg = f"⚠️ *Kafka daemon down*\nPod `{name}` status: `{status_str}`."
                 if token and chat_id:
                     _send_telegram(token, chat_id, msg)
-                context.log.warning("Container %s not found", name)
-                new_alerts.append(key)
-        elif status != "running":
-            if key not in alerted:
-                msg = f"⚠️ *Kafka daemon not running*\nContainer `{name}` is `{status}`."
+                context.log.warning("Pod %s status: %s", name, status_str)
+                new_alerts.append(down_key)
+            alerted.discard(not_ready_key)
+            alerted.discard(restarted_key)
+            continue
+
+        alerted.discard(down_key)
+
+        # Container ready flag — catches crash-loop before process exits cleanly
+        if not health.ready:
+            if not_ready_key not in alerted:
+                msg = (
+                    f"⚠️ *Kafka daemon not ready*\n"
+                    f"Pod `{name}` is Running but container is not ready "
+                    f"(restarts: `{health.restart_count}`)."
+                )
                 if token and chat_id:
                     _send_telegram(token, chat_id, msg)
-                context.log.warning("Container %s is %s", name, status)
-                new_alerts.append(key)
+                context.log.warning("Pod %s not ready, restart_count=%d", name, health.restart_count)
+                new_alerts.append(not_ready_key)
         else:
-            alerted.discard(key)  # recovered — clear so the next failure re-alerts
+            alerted.discard(not_ready_key)
+
+        # Restart count — alert once when threshold crossed; clear only on pod replacement
+        prev = prev_restarts.get(name, 0)
+        if current_restarts > prev and current_restarts >= _RESTART_WARN:
+            if restarted_key not in alerted:
+                msg = (
+                    f"⚠️ *Kafka daemon restarting*\n"
+                    f"Pod `{name}` has restarted `{current_restarts}` times "
+                    f"(+{current_restarts - prev} since last check)."
+                )
+                if token and chat_id:
+                    _send_telegram(token, chat_id, msg)
+                context.log.warning("Pod %s restart_count=%d (+%d)", name, current_restarts, current_restarts - prev)
+                new_alerts.append(restarted_key)
+        elif current_restarts < _RESTART_WARN:
+            alerted.discard(restarted_key)
 
     # ── Consumer group lag ────────────────────────────────────────────────────
-    lag     = kafka_admin.consumer_group_lag("storage")
-    lag_key = "high_lag:storage"
+    lag              = kafka_admin.consumer_group_lag("storage")
+    lag_key          = "high_lag:storage"
+    lag_growing_key  = "lag_growing:storage"
 
     if lag >= _LAG_WARN_THRESHOLD:
         if lag_key not in alerted:
             msg = (
                 f"⚠️ *Kafka Consumer Lag*\n"
-                f"Group `storage` lag is `{lag:,}` messages — "
+                f"Group `storage` lag: `{lag:,}` messages — "
                 f"storage consumer may be falling behind or stalled."
             )
             if token and chat_id:
@@ -206,12 +262,32 @@ def kafka_pipeline_health_sensor(context: SensorEvaluationContext) -> SensorResu
             context.log.warning("Storage consumer group lag: %d", lag)
             new_alerts.append(lag_key)
     elif lag >= 0:
-        alerted.discard(lag_key)  # recovered
+        alerted.discard(lag_key)
+
+    # Lag delta — catches a stalling consumer before it hits the absolute threshold
+    if lag >= 0 and prev_lag >= 0 and (lag - prev_lag) >= _LAG_DELTA_WARN:
+        if lag_growing_key not in alerted:
+            msg = (
+                f"⚠️ *Consumer Lag Growing*\n"
+                f"Group `storage` lag grew by `{lag - prev_lag:,}` since last check "
+                f"(now `{lag:,}`) — consumer may be stalled."
+            )
+            if token and chat_id:
+                _send_telegram(token, chat_id, msg)
+            context.log.warning("Storage lag growing: %d → %d (+%d)", prev_lag, lag, lag - prev_lag)
+            new_alerts.append(lag_growing_key)
+    elif lag >= 0 and prev_lag >= 0 and lag <= prev_lag:
+        alerted.discard(lag_growing_key)
 
     alerted.update(new_alerts)
+    new_cursor = json.dumps({
+        "alerts":         sorted(alerted),
+        "prev_lag":       lag if lag >= 0 else prev_lag,
+        "restart_counts": new_restarts,
+    })
 
     return SensorResult(
         run_requests=[],
-        cursor=json.dumps(sorted(alerted)),
-        skip_reason=None if new_alerts else "All Kafka daemons running; consumer lag within threshold.",
+        cursor=new_cursor,
+        skip_reason=None if new_alerts else "All Kafka daemons healthy; consumer lag within threshold.",
     )
