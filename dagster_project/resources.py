@@ -217,6 +217,7 @@ class SparkClusterResource(ConfigurableResource):
             {"name": "MINIO_SECRET_KEY",  "valueFrom": {"secretKeyRef": {"name": "minio-credentials", "key": "secret-key"}}},
         ]
 
+        minio_bucket = os.getenv("MINIO_BUCKET", "market-data")
         spark_app = {
             "apiVersion": "sparkoperator.k8s.io/v1beta2",
             "kind": "SparkApplication",
@@ -230,6 +231,13 @@ class SparkClusterResource(ConfigurableResource):
                 "mainApplicationFile": "local:///opt/project/main.py",
                 "arguments": args,
                 "sparkVersion": "4.1.1",
+                "sparkConf": {
+                    "spark.eventLog.enabled": "true",
+                    "spark.eventLog.dir": f"s3a://{minio_bucket}/spark-events",
+                    "spark.hadoop.fs.s3a.endpoint": minio_endpoint,
+                    "spark.hadoop.fs.s3a.path.style.access": "true",
+                    "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+                },
                 "driver": {
                     "cores": 1,
                     "memory": "1g",
