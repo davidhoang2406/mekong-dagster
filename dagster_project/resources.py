@@ -69,9 +69,14 @@ class MinioResource(ConfigurableResource):
             endpoint_url=self.endpoint,
             use_ssl=self.endpoint.startswith("https://"),
         )
-        # Explicit partition schema prevents PyArrow from treating Spark's zero-byte
-        # directory-marker objects (e.g. "month=05/") as parquet files, which causes
-        # FileNotFoundError. exclude_invalid_files skips any remaining non-parquet objects.
+        # Glob for .parquet files only. This bypasses PyArrow's FileSystemDatasetFactory
+        # discovery step, which calls open_input_file on Spark's zero-byte directory-marker
+        # objects (e.g. "month=05/") and raises FileNotFoundError before exclude_invalid_files
+        # can intervene.
+        parquet_files = fs.glob(f"{bucket}/{dataset_path}/**/*.parquet")
+        if not parquet_files:
+            return pa.table({})
+
         partitioning = ds.partitioning(
             pa.schema([
                 ("asset_class", pa.string()),
@@ -81,13 +86,7 @@ class MinioResource(ConfigurableResource):
             ]),
             flavor="hive",
         )
-        dataset = ds.dataset(
-            f"{bucket}/{dataset_path}",
-            filesystem=fs,
-            format="parquet",
-            partitioning=partitioning,
-            exclude_invalid_files=True,
-        )
+        dataset = ds.dataset(parquet_files, filesystem=fs, format="parquet", partitioning=partitioning)
         return dataset.to_table(filter=filter_expr)
 
 
