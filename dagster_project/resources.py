@@ -81,6 +81,25 @@ class MinioResource(ConfigurableResource):
 class KafkaAdminResource(ConfigurableResource):
     bootstrap_servers: str
 
+    def topic_end_offset(self, topic: str) -> int:
+        """Sum of end offsets across all partitions for topic. Returns -1 on error."""
+        from kafka import KafkaConsumer, TopicPartition
+        consumer = KafkaConsumer(
+            bootstrap_servers=self.bootstrap_servers,
+            request_timeout_ms=5000,
+        )
+        try:
+            partitions = consumer.partitions_for_topic(topic)
+            if not partitions:
+                return -1
+            tps = [TopicPartition(topic, p) for p in partitions]
+            return sum(consumer.end_offsets(tps).values())
+        except Exception as exc:
+            log.warning("Failed to get end offset for %s: %s", topic, exc)
+            return -1
+        finally:
+            consumer.close()
+
     def consumer_group_lag(self, group_id: str) -> int:
         """Total uncommitted messages for group_id. Returns -1 on error or no offsets."""
         from kafka import KafkaAdminClient, KafkaConsumer

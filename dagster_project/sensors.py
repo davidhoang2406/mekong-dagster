@@ -2,7 +2,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from dagster import (
     DagsterRunStatus,
@@ -149,22 +149,39 @@ _LAG_WARN_THRESHOLD   = 50_000   # absolute lag before alerting
 _LAG_DELTA_WARN       = 1_000    # lag growth between ticks that signals a stall
 _RESTART_WARN         = 3        # cumulative restarts considered unhealthy
 
+# topic → (daemon label, stale threshold seconds)
+_PRODUCER_TOPICS: dict[str, tuple[str, int]] = {
+    "stock.price.realtime":  ("stock-price-producer",  900),   # 15 min; only checked during VN market hours
+    "crypto.price.realtime": ("crypto-price-producer", 300),   # 5 min; 24/7 market
+}
+
+_VN_TZ = timezone(timedelta(hours=7))
+
+
+def _in_vn_trading_hours() -> bool:
+    now = datetime.now(_VN_TZ)
+    if now.weekday() >= 5:
+        return False
+    h, m = now.hour, now.minute
+    return (9, 0) <= (h, m) < (11, 30) or (13, 0) <= (h, m) < (15, 15)
+
 
 def _load_cursor(raw: str | None) -> dict:
     """Parse sensor cursor, migrating from the old list format."""
     if not raw:
-        return {"alerts": [], "prev_lag": -1, "restart_counts": {}}
+        return {"alerts": [], "prev_lag": -1, "restart_counts": {}, "topic_offsets": {}}
     try:
         data = json.loads(raw)
         if isinstance(data, list):
-            return {"alerts": data, "prev_lag": -1, "restart_counts": {}}
+            return {"alerts": data, "prev_lag": -1, "restart_counts": {}, "topic_offsets": {}}
         return {
             "alerts":         data.get("alerts", []),
             "prev_lag":       data.get("prev_lag", -1),
             "restart_counts": data.get("restart_counts", {}),
+            "topic_offsets":  data.get("topic_offsets", {}),
         }
     except (json.JSONDecodeError, AttributeError):
-        return {"alerts": [], "prev_lag": -1, "restart_counts": {}}
+        return {"alerts": [], "prev_lag": -1, "restart_counts": {}, "topic_offsets": {}}
 
 
 @sensor(
@@ -186,9 +203,12 @@ def kafka_pipeline_health_sensor(context: SensorEvaluationContext) -> SensorResu
     alerted       = set(cursor_data["alerts"])
     prev_lag      = cursor_data["prev_lag"]
     prev_restarts = cursor_data["restart_counts"]
+    topic_offsets = cursor_data["topic_offsets"]
 
-    new_alerts:   list[str] = []
-    new_restarts: dict      = {}
+    new_alerts:       list[str] = []
+    new_restarts:     dict      = {}
+    new_topic_offsets: dict     = {}
+    now_ts = datetime.now(timezone.utc).isoformat()
 
     # ── Pod health (phase + readiness + restart count) ────────────────────────
     for name in _KAFKA_DAEMONS:
@@ -279,11 +299,46 @@ def kafka_pipeline_health_sensor(context: SensorEvaluationContext) -> SensorResu
     elif lag >= 0 and prev_lag >= 0 and lag <= prev_lag:
         alerted.discard(lag_growing_key)
 
+    # ── Producer output (topic high-watermark advancing) ─────────────────────
+    for topic, (daemon, stale_secs) in _PRODUCER_TOPICS.items():
+        stale_key      = f"stale:{daemon}"
+        current_offset = kafka_admin.topic_end_offset(topic)
+        prev_entry     = topic_offsets.get(topic, {"offset": -1, "last_advance_ts": now_ts})
+        prev_offset    = prev_entry["offset"]
+        last_advance   = prev_entry["last_advance_ts"]
+
+        if current_offset > prev_offset:
+            new_topic_offsets[topic] = {"offset": current_offset, "last_advance_ts": now_ts}
+            alerted.discard(stale_key)
+        else:
+            new_topic_offsets[topic] = {"offset": max(current_offset, prev_offset), "last_advance_ts": last_advance}
+
+            is_stock = topic == "stock.price.realtime"
+            should_check = (not is_stock or _in_vn_trading_hours()) and current_offset >= 0
+            if should_check:
+                try:
+                    elapsed = (datetime.fromisoformat(now_ts) - datetime.fromisoformat(last_advance)).total_seconds()
+                except (ValueError, TypeError):
+                    elapsed = 0
+                if elapsed > stale_secs and stale_key not in alerted:
+                    msg = (
+                        f"⚠️ *Producer stalled*\n"
+                        f"`{daemon}` has not published to `{topic}` "
+                        f"for `{int(elapsed // 60)}m` (last offset: `{current_offset:,}`)."
+                    )
+                    if token and chat_id:
+                        _send_telegram(token, chat_id, msg)
+                    context.log.warning(
+                        "Producer %s stalled: %s offset frozen for %.0fs", daemon, topic, elapsed
+                    )
+                    new_alerts.append(stale_key)
+
     alerted.update(new_alerts)
     new_cursor = json.dumps({
         "alerts":         sorted(alerted),
         "prev_lag":       lag if lag >= 0 else prev_lag,
         "restart_counts": new_restarts,
+        "topic_offsets":  new_topic_offsets,
     })
 
     return SensorResult(
