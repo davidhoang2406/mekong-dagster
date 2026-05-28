@@ -25,7 +25,7 @@ defs = Definitions(
             market_analysis_bucket=os.getenv("MINIO_ANALYSIS_BUCKET", "market-analysis"),
         ),
         "spark": SparkClusterResource(
-            container_name=os.getenv("SPARK_CONTAINER_NAME", "spark-master"),
+            spark_image=os.getenv("SPARK_IMAGE", "ghcr.io/davidhoang2406/mekong-spark:latest"),
         ),
         "kafka_admin": KafkaAdminResource(
             bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092"),

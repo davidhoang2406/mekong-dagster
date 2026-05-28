@@ -1,11 +1,25 @@
 import logging
+import os
+import time
 from typing import Optional
 
-import docker as docker_sdk
 from dagster import ConfigurableResource
 from minio import Minio
 
 log = logging.getLogger(__name__)
+
+_PIPELINE_NS    = "mekong-pipeline"
+_PROCESSING_NS  = "mekong-processing"
+
+
+def _k8s():
+    """Return kubernetes client module with config loaded."""
+    from kubernetes import client, config as k8s_config
+    try:
+        k8s_config.load_incluster_config()
+    except k8s_config.ConfigException:
+        k8s_config.load_kube_config()
+    return client
 
 
 class MinioResource(ConfigurableResource):
@@ -37,11 +51,6 @@ class MinioResource(ConfigurableResource):
             return False
 
     def read_parquet(self, bucket: str, dataset_path: str, filter_expr=None) -> "pa.Table":
-        """Read a Hive-partitioned Parquet dataset from MinIO via s3fs + pyarrow.
-
-        dataset_path is the prefix below the bucket root, e.g. "ohlcv.bar".
-        filter_expr is an optional pyarrow.dataset Expression for partition pruning.
-        """
         import pyarrow as pa  # noqa: F401
         import pyarrow.dataset as ds
         import s3fs
@@ -62,15 +71,10 @@ class MinioResource(ConfigurableResource):
 
 
 class KafkaAdminResource(ConfigurableResource):
-    """Checks Kafka consumer group lag via KafkaAdminClient."""
     bootstrap_servers: str
 
     def consumer_group_lag(self, group_id: str) -> int:
-        """Total uncommitted messages across all partitions for group_id.
-
-        Returns -1 when the group has no committed offsets (not yet started or
-        was reset). Returns 0 when fully caught up.
-        """
+        """Total uncommitted messages for group_id. Returns -1 on error or no offsets."""
         from kafka import KafkaAdminClient, KafkaConsumer
 
         admin = KafkaAdminClient(
@@ -106,66 +110,127 @@ class KafkaAdminResource(ConfigurableResource):
             for tp, om in committed.items()
         )
 
-    def container_running(self, container_name: str) -> Optional[str]:
-        """Returns the container status string, or None if not found."""
+    def container_running(self, app_label: str) -> Optional[str]:
+        """Returns lowercase pod phase ('running', 'pending', 'failed') or None if no pod found."""
         try:
-            client = docker_sdk.from_env()
-            return client.containers.get(container_name).status
-        except docker_sdk.errors.NotFound:
-            return None
+            k8s = _k8s()
+            pods = k8s.CoreV1Api().list_namespaced_pod(
+                namespace=_PIPELINE_NS,
+                label_selector=f"app={app_label}",
+            )
+            if not pods.items:
+                return None
+            pod = max(pods.items, key=lambda p: p.metadata.creation_timestamp)
+            return (pod.status.phase or "unknown").lower()
         except Exception as exc:
-            log.warning("Docker status check failed for %s: %s", container_name, exc)
+            log.warning("K8s pod check failed for %s: %s", app_label, exc)
             return None
 
-    def start_container(self, container_name: str) -> None:
-        """Start a stopped container (no-op if already running)."""
-        client = docker_sdk.from_env()
-        container = client.containers.get(container_name)
-        if container.status != "running":
-            container.start()
-            log.info("Started container %s", container_name)
-        else:
-            log.info("Container %s already running", container_name)
+    def start_container(self, app_label: str) -> None:
+        """Scale deployment to 1 replica."""
+        try:
+            _k8s().AppsV1Api().patch_namespaced_deployment_scale(
+                name=app_label,
+                namespace=_PIPELINE_NS,
+                body={"spec": {"replicas": 1}},
+            )
+            log.info("Scaled %s/%s to 1 replica", _PIPELINE_NS, app_label)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to start {app_label}: {exc}") from exc
 
-    def stop_container(self, container_name: str, timeout: int = 30) -> None:
-        """Send SIGTERM to a container and wait up to timeout seconds.
-
-        timeout=30 gives the storage consumer time to flush its current batch
-        before SIGKILL is sent. Producers have their own backoff logic and
-        commit state is in Kafka, so 30s is conservative but safe.
-        """
-        client = docker_sdk.from_env()
-        container = client.containers.get(container_name)
-        if container.status == "running":
-            container.stop(timeout=timeout)
-            log.info("Stopped container %s", container_name)
-        else:
-            log.info("Container %s was not running (status: %s)", container_name, container.status)
+    def stop_container(self, app_label: str, timeout: int = 30) -> None:
+        """Scale deployment to 0 replicas."""
+        try:
+            _k8s().AppsV1Api().patch_namespaced_deployment_scale(
+                name=app_label,
+                namespace=_PIPELINE_NS,
+                body={"spec": {"replicas": 0}},
+            )
+            log.info("Scaled %s/%s to 0 replicas", _PIPELINE_NS, app_label)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to stop {app_label}: {exc}") from exc
 
 
 class SparkClusterResource(ConfigurableResource):
-    """Submits batch jobs via `docker exec` into the running spark-master container."""
-    container_name: str = "spark-master"
+    spark_image: str = "ghcr.io/davidhoang2406/mekong-spark:latest"
+    namespace: str = "mekong-processing"
+    service_account: str = "spark"
 
     def submit(self, args: list[str]) -> None:
-        import shlex
-        bash_cmd = (
-            "PYTHONPATH=/opt/project "
-            "/opt/spark/bin/spark-submit "
-            "--master spark://spark-master:7077 "
-            "--conf spark.executorEnv.PYTHONPATH=/opt/project "
-            "--conf spark.executorEnv.MINIO_ENDPOINT=$MINIO_ENDPOINT "
-            "--conf spark.executorEnv.MINIO_ACCESS_KEY=$MINIO_ACCESS_KEY "
-            "--conf spark.executorEnv.MINIO_SECRET_KEY=$MINIO_SECRET_KEY "
-            f"/opt/project/main.py {shlex.join(args)}"
+        """Create a SparkApplication CRD and block until COMPLETED or FAILED."""
+        k8s = _k8s()
+        custom_api = k8s.CustomObjectsApi()
+
+        job_name = f"spark-{args[0]}-{int(time.time())}"
+        minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://minio.mekong-data.svc.cluster.local:9000")
+
+        _env = [
+            {"name": "MINIO_ENDPOINT",   "value": minio_endpoint},
+            {"name": "PYTHONPATH",        "value": "/opt/project"},
+            {"name": "MINIO_ACCESS_KEY",  "valueFrom": {"secretKeyRef": {"name": "minio-credentials", "key": "access-key"}}},
+            {"name": "MINIO_SECRET_KEY",  "valueFrom": {"secretKeyRef": {"name": "minio-credentials", "key": "secret-key"}}},
+        ]
+
+        spark_app = {
+            "apiVersion": "sparkoperator.k8s.io/v1beta2",
+            "kind": "SparkApplication",
+            "metadata": {"name": job_name, "namespace": self.namespace},
+            "spec": {
+                "type": "Python",
+                "pythonVersion": "3",
+                "mode": "cluster",
+                "image": self.spark_image,
+                "imagePullPolicy": "Always",
+                "mainApplicationFile": "local:///opt/project/main.py",
+                "arguments": args,
+                "sparkVersion": "4.1.1",
+                "driver": {
+                    "cores": 1,
+                    "memory": "512m",
+                    "serviceAccount": self.service_account,
+                    "env": _env,
+                },
+                "executor": {
+                    "cores": 1,
+                    "instances": 1,
+                    "memory": "512m",
+                    "env": _env,
+                },
+            },
+        }
+
+        log.info("Creating SparkApplication %s args=%s", job_name, args)
+        custom_api.create_namespaced_custom_object(
+            group="sparkoperator.k8s.io",
+            version="v1beta2",
+            namespace=self.namespace,
+            plural="sparkapplications",
+            body=spark_app,
         )
-        log.info("Submitting to %s: %s", self.container_name, bash_cmd)
-        client    = docker_sdk.from_env()
-        container = client.containers.get(self.container_name)
-        exit_code, output = container.exec_run(["bash", "-c", bash_cmd], demux=False)
-        if output:
-            log.info(output.decode(errors="replace"))
-        if exit_code != 0:
-            raise RuntimeError(
-                f"Spark job failed (exit {exit_code}):\n{output.decode(errors='replace') if output else ''}"
-            )
+
+        deadline = time.monotonic() + 3600
+        _TERMINAL = {"COMPLETED", "FAILED", "SUBMISSION_FAILED", "INVALIDATING"}
+
+        while time.monotonic() < deadline:
+            time.sleep(30)
+            try:
+                obj = custom_api.get_namespaced_custom_object(
+                    group="sparkoperator.k8s.io",
+                    version="v1beta2",
+                    namespace=self.namespace,
+                    plural="sparkapplications",
+                    name=job_name,
+                )
+                state = obj.get("status", {}).get("applicationState", {}).get("state") or "UNKNOWN"
+                log.info("SparkApplication %s → %s", job_name, state)
+                if state == "COMPLETED":
+                    return
+                if state in _TERMINAL:
+                    err = obj.get("status", {}).get("applicationState", {}).get("errorMessage", "")
+                    raise RuntimeError(f"Spark job {job_name} failed ({state}): {err}")
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                log.warning("Poll error for %s: %s", job_name, exc)
+
+        raise RuntimeError(f"Spark job {job_name} timed out after 3600s")
