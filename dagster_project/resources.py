@@ -220,14 +220,14 @@ class SparkClusterResource(ConfigurableResource):
                 "sparkVersion": "4.1.1",
                 "driver": {
                     "cores": 1,
-                    "memory": "512m",
+                    "memory": "1g",
                     "serviceAccount": self.service_account,
                     "env": _env,
                 },
                 "executor": {
                     "cores": 1,
                     "instances": 1,
-                    "memory": "512m",
+                    "memory": "1g",
                     "env": _env,
                 },
             },
