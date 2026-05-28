@@ -115,6 +115,9 @@ def raw_data_expiry_sensor(context: SensorEvaluationContext) -> SensorResult | S
     new_alert_keys: list[str] = []
     today = date.today()
 
+    context.log.info("raw_data_expiry_sensor: scanning %s → %s",
+                     (today - timedelta(days=7)).isoformat(), (today - timedelta(days=1)).isoformat())
+
     for offset in range(1, 8):  # yesterday → 7 days ago
         target = today - timedelta(days=offset)
         ds     = target.isoformat()
@@ -122,7 +125,8 @@ def raw_data_expiry_sensor(context: SensorEvaluationContext) -> SensorResult | S
 
         raw_prefix = f"price.snapshot/year={year}/month={month}/day={day}/"
         if not minio.partition_exists(raw_bucket, raw_prefix):
-            continue  # no raw data for this date — nothing at risk
+            context.log.info("%s: no raw snapshots — skipping", ds)
+            continue
 
         marker_key     = f"_SUCCESS/year={year}/month={month}/day={day}"
         no_marker_key  = f"no_marker:{ds}"
@@ -139,10 +143,11 @@ def raw_data_expiry_sensor(context: SensorEvaluationContext) -> SensorResult | S
                 )
                 if token and chat_id:
                     _send_telegram(token, chat_id, text)
-                context.log.warning("No _SUCCESS marker for %s", ds)
+                context.log.warning("%s: raw data exists but no _SUCCESS marker — expires in %d days", ds, days_remaining)
                 new_alert_keys.append(no_marker_key)
+            else:
+                context.log.info("%s: missing _SUCCESS (already alerted)", ds)
         else:
-            # Marker present — verify downstream OHLCV output also exists.
             ohlcv_prefix = f"ohlcv.bar/asset_class=stock/year={year}/month={month}/day={day}/"
             if not minio.partition_exists(analysis_bucket, ohlcv_prefix):
                 if no_ohlcv_key not in alerted:
@@ -154,10 +159,17 @@ def raw_data_expiry_sensor(context: SensorEvaluationContext) -> SensorResult | S
                     )
                     if token and chat_id:
                         _send_telegram(token, chat_id, text)
-                    context.log.warning("_SUCCESS marker present but no OHLCV output for %s", ds)
+                    context.log.warning("%s: _SUCCESS present but no OHLCV output", ds)
                     new_alert_keys.append(no_ohlcv_key)
+                else:
+                    context.log.info("%s: missing OHLCV output (already alerted)", ds)
+            else:
+                context.log.info("%s: OK (_SUCCESS + OHLCV present)", ds)
 
     alerted.update(new_alert_keys)
+
+    context.log.info("raw_data_expiry_sensor: done — %d new alert(s), %d total active",
+                     len(new_alert_keys), len(alerted))
 
     if not new_alert_keys:
         return SensorResult(
@@ -238,6 +250,9 @@ def kafka_pipeline_health_sensor(context: SensorEvaluationContext) -> SensorResu
     new_topic_offsets: dict     = {}
     now_ts = datetime.now(timezone.utc).isoformat()
 
+    context.log.info("kafka_pipeline_health_sensor: tick start — active alerts: %s",
+                     sorted(alerted) or "none")
+
     # ── Pod health (phase + readiness + restart count) ────────────────────────
     for name in _KAFKA_DAEMONS:
         health = kafka_admin.pod_health(name)
@@ -247,6 +262,12 @@ def kafka_pipeline_health_sensor(context: SensorEvaluationContext) -> SensorResu
         down_key              = f"down:{name}"
         not_ready_key         = f"not_ready:{name}"
         restarted_key         = f"restarted:{name}"
+
+        if health is None:
+            context.log.warning("Pod %s: not found", name)
+        else:
+            context.log.info("Pod %s: phase=%s ready=%s restarts=%d",
+                             name, health.phase, health.ready, health.restart_count)
 
         if health is None or health.phase != "running":
             status_str = health.phase if health else "not found"
@@ -294,7 +315,10 @@ def kafka_pipeline_health_sensor(context: SensorEvaluationContext) -> SensorResu
             alerted.discard(restarted_key)
 
     # ── Consumer group lag ────────────────────────────────────────────────────
-    lag              = kafka_admin.consumer_group_lag("storage")
+    lag = kafka_admin.consumer_group_lag("storage")
+    context.log.info("Consumer group 'storage': lag=%s prev=%s",
+                     lag if lag >= 0 else "unavailable",
+                     prev_lag if prev_lag >= 0 else "unknown")
     lag_key          = "high_lag:storage"
     lag_growing_key  = "lag_growing:storage"
 
@@ -335,6 +359,11 @@ def kafka_pipeline_health_sensor(context: SensorEvaluationContext) -> SensorResu
         prev_offset    = prev_entry["offset"]
         last_advance   = prev_entry["last_advance_ts"]
 
+        context.log.info("Topic %s: offset=%s prev=%s",
+                         topic,
+                         current_offset if current_offset >= 0 else "unavailable",
+                         prev_offset if prev_offset >= 0 else "unknown")
+
         if current_offset > prev_offset:
             new_topic_offsets[topic] = {"offset": current_offset, "last_advance_ts": now_ts}
             alerted.discard(stale_key)
@@ -362,6 +391,8 @@ def kafka_pipeline_health_sensor(context: SensorEvaluationContext) -> SensorResu
                     new_alerts.append(stale_key)
 
     alerted.update(new_alerts)
+    context.log.info("kafka_pipeline_health_sensor: tick done — %d new alert(s), active: %s",
+                     len(new_alerts), sorted(alerted) or "none")
     new_cursor = json.dumps({
         "alerts":         sorted(alerted),
         "prev_lag":       lag if lag >= 0 else prev_lag,
