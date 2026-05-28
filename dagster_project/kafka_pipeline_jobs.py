@@ -32,16 +32,16 @@ def start_kafka_daemons(context: OpExecutionContext, config: KafkaDaemonConfig) 
     # Preserve canonical start order for whatever subset was requested
     selected = [n for n in _START_ORDER if n in config.containers]
     for name in selected:
-        status = kafka.container_running(name)
-        if status is None:
+        health = kafka.pod_health(name)
+        if health is None:
             raise RuntimeError(
-                f"Container '{name}' not found — run `make kafka-up` first to create it."
+                f"Pod '{name}' not found — check that the deployment exists in mekong-pipeline."
             )
-        if status == "running":
+        if health.phase == "running":
             context.log.info("%s is already running — skipping", name)
         else:
             kafka.start_container(name)
-            context.log.info("Started %s (was: %s)", name, status)
+            context.log.info("Started %s (was: %s)", name, health.phase)
 
 
 @op(required_resource_keys={"kafka_admin"})
@@ -53,12 +53,12 @@ def stop_kafka_daemons(context: OpExecutionContext, config: KafkaDaemonConfig) -
     # Preserve canonical stop order for whatever subset was requested
     selected = [n for n in _STOP_ORDER if n in config.containers]
     for name in selected:
-        status = kafka.container_running(name)
-        if status is None:
+        health = kafka.pod_health(name)
+        if health is None:
             context.log.warning("%s not found — nothing to stop", name)
             continue
-        if status != "running":
-            context.log.info("%s is not running (status: %s) — skipping", name, status)
+        if health.phase != "running":
+            context.log.info("%s is not running (phase: %s) — skipping", name, health.phase)
         else:
             kafka.stop_container(name)
             context.log.info("Stopped %s", name)
