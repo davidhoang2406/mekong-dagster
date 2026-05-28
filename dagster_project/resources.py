@@ -59,7 +59,7 @@ class MinioResource(ConfigurableResource):
             return False
 
     def read_parquet(self, bucket: str, dataset_path: str, filter_expr=None) -> "pa.Table":
-        import pyarrow as pa  # noqa: F401
+        import pyarrow as pa
         import pyarrow.dataset as ds
         import s3fs
 
@@ -69,11 +69,24 @@ class MinioResource(ConfigurableResource):
             endpoint_url=self.endpoint,
             use_ssl=self.endpoint.startswith("https://"),
         )
+        # Explicit partition schema prevents PyArrow from treating Spark's zero-byte
+        # directory-marker objects (e.g. "month=05/") as parquet files, which causes
+        # FileNotFoundError. exclude_invalid_files skips any remaining non-parquet objects.
+        partitioning = ds.partitioning(
+            pa.schema([
+                ("asset_class", pa.string()),
+                ("year",        pa.string()),
+                ("month",       pa.string()),
+                ("day",         pa.string()),
+            ]),
+            flavor="hive",
+        )
         dataset = ds.dataset(
             f"{bucket}/{dataset_path}",
             filesystem=fs,
             format="parquet",
-            partitioning="hive",
+            partitioning=partitioning,
+            exclude_invalid_files=True,
         )
         return dataset.to_table(filter=filter_expr)
 
