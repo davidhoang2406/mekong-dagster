@@ -4,7 +4,6 @@ from dagster import (
     AssetCheckSeverity,
     AssetDep,
     AssetExecutionContext,
-    AutomationCondition,
     MetadataValue,
     RetryPolicy,
     asset,
@@ -18,7 +17,6 @@ from dagster_project.resources import MinioResource, SparkClusterResource
 @asset(
     partitions_def=daily_partitions,
     deps=[AssetDep("ohlcv_daily_bars")],
-    automation_condition=AutomationCondition.eager(),
     retry_policy=RetryPolicy(max_retries=2, delay=300),
     group_name="batch_pipeline",
     description="Daily digest of top gainers, losers, and volume leaders derived from OHLCV bars.",

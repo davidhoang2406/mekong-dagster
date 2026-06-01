@@ -6,7 +6,7 @@ from dagster_project.assets import digest, ohlcv, price_snapshots, screener, tec
 from dagster_project.resources import KafkaAdminResource, MinioResource, SparkClusterResource
 from dagster_project.kafka_pipeline_jobs import (start_kafka_pipeline_job,
                                                   stop_kafka_pipeline_job)
-from dagster_project.schedules import (daily_market_close, ohlcv_daily_job,
+from dagster_project.schedules import (daily_market_close, daily_pipeline_job,
                                         weekly_screener, weekly_screener_job)
 from dagster_project.sensors import (kafka_pipeline_health_sensor,
                                       raw_data_expiry_sensor, telegram_failure_sensor,
@@ -32,7 +32,7 @@ defs = Definitions(
             bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092"),
         ),
     },
-    jobs=[ohlcv_daily_job, weekly_screener_job, start_kafka_pipeline_job, stop_kafka_pipeline_job],
+    jobs=[daily_pipeline_job, weekly_screener_job, start_kafka_pipeline_job, stop_kafka_pipeline_job],
     schedules=[daily_market_close, weekly_screener],
     sensors=[telegram_failure_sensor, telegram_success_sensor,
              raw_data_expiry_sensor, kafka_pipeline_health_sensor],
