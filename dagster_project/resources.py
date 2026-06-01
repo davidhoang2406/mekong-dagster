@@ -211,10 +211,12 @@ class SparkClusterResource(ConfigurableResource):
         minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://minio.mekong-data.svc.cluster.local:9000")
 
         _env = [
-            {"name": "MINIO_ENDPOINT",   "value": minio_endpoint},
-            {"name": "PYTHONPATH",        "value": "/opt/project"},
-            {"name": "MINIO_ACCESS_KEY",  "valueFrom": {"secretKeyRef": {"name": "minio-credentials", "key": "access-key"}}},
-            {"name": "MINIO_SECRET_KEY",  "valueFrom": {"secretKeyRef": {"name": "minio-credentials", "key": "secret-key"}}},
+            {"name": "MINIO_ENDPOINT",        "value": minio_endpoint},
+            {"name": "PYTHONPATH",             "value": "/opt/project"},
+            {"name": "HOME",                   "value": "/tmp"},
+            {"name": "MPLCONFIGDIR",           "value": "/tmp/matplotlib"},
+            {"name": "MINIO_ACCESS_KEY",       "valueFrom": {"secretKeyRef": {"name": "minio-credentials", "key": "access-key"}}},
+            {"name": "MINIO_SECRET_KEY",       "valueFrom": {"secretKeyRef": {"name": "minio-credentials", "key": "secret-key"}}},
         ]
 
         minio_bucket = os.getenv("MINIO_BUCKET", "market-data")
