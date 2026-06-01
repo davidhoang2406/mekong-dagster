@@ -4,9 +4,11 @@ from dagster import RunRequest, define_asset_job, schedule, AssetSelection
 
 from dagster_project.partitions import daily_partitions, weekly_partitions
 
-ohlcv_daily_job = define_asset_job(
-    name="ohlcv_daily_job",
-    selection=AssetSelection.assets("ohlcv_daily_bars"),
+# Runs OHLCV + indicators + digest together so all three complete in one scheduled run.
+# technical_indicators and daily_digest no longer rely on AutomationCondition.eager().
+daily_pipeline_job = define_asset_job(
+    name="daily_pipeline_job",
+    selection=AssetSelection.assets("ohlcv_daily_bars", "technical_indicators", "daily_digest"),
     partitions_def=daily_partitions,
 )
 
@@ -21,7 +23,7 @@ weekly_screener_job = define_asset_job(
 # Partition key is yesterday's date — previous day's data is now complete.
 @schedule(
     cron_schedule="0 16 * * *",
-    job=ohlcv_daily_job,
+    job=daily_pipeline_job,
     execution_timezone="Asia/Ho_Chi_Minh",
 )
 def daily_market_close(context):

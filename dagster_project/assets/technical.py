@@ -4,7 +4,6 @@ from dagster import (
     AssetCheckSeverity,
     AssetDep,
     AssetExecutionContext,
-    AutomationCondition,
     MetadataValue,
     RetryPolicy,
     TimeWindowPartitionMapping,
@@ -25,7 +24,6 @@ from dagster_project.resources import MinioResource, SparkClusterResource
         )
     ],
     retry_policy=RetryPolicy(max_retries=2, delay=300),
-    automation_condition=AutomationCondition.eager(),
     group_name="batch_pipeline",
     description=(
         "SMA-20/50/200, RSI-14, MACD(12/26/9), and Bollinger Bands computed over "

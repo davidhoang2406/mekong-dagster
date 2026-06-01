@@ -1,6 +1,13 @@
-from datetime import date as _date, timedelta
-
-from dagster import AutomationCondition, DataVersion, DataVersionsByPartition, MetadataValue, observable_source_asset
+from dagster import (
+    AssetCheckExecutionContext,
+    AssetCheckResult,
+    AssetCheckSeverity,
+    AssetExecutionContext,
+    MetadataValue,
+    ObserveResult,
+    asset_check,
+    observable_source_asset,
+)
 
 from dagster_project.partitions import daily_partitions
 from dagster_project.resources import MinioResource
@@ -8,8 +15,6 @@ from dagster_project.resources import MinioResource
 
 @observable_source_asset(
     partitions_def=daily_partitions,
-    # Auto-observe at 08:00 UTC (15:00 GMT+7) daily — 1 hour before ohlcv_daily_bars runs.
-    automation_condition=AutomationCondition.on_cron("0 8 * * *"),
     group_name="batch_pipeline",
     description="Raw price snapshots (Avro) produced by StorageConsumer — external to Dagster.",
     metadata={
@@ -20,18 +25,63 @@ from dagster_project.resources import MinioResource
         "asset_classes": MetadataValue.text("stock, crypto"),
     },
 )
-def price_snapshots(minio: MinioResource) -> DataVersionsByPartition:
-    """Observe all recent partitions and report whether data exists in MinIO."""
-    versions: dict[str, DataVersion] = {}
+def price_snapshots(context: AssetExecutionContext, minio: MinioResource) -> ObserveResult:
+    date = context.partition_key
+    year, month, day = date[:4], date[5:7], date[8:10]
 
-    today = _date.today()
-    for offset in range(1, 8):  # yesterday → 7 days ago
-        target = today - timedelta(days=offset)
-        partition_key = target.isoformat()
-        year, month, day = target.strftime("%Y"), target.strftime("%m"), target.strftime("%d")
+    stock_prefix  = f"price.snapshot/asset_class=stock/year={year}/month={month}/day={day}/"
+    crypto_prefix = f"price.snapshot/asset_class=crypto/year={year}/month={month}/day={day}/"
 
-        prefix = f"price.snapshot/asset_class=stock/year={year}/month={month}/day={day}/"
-        exists = minio.partition_exists(minio.market_data_bucket, prefix)
-        versions[partition_key] = DataVersion("exists" if exists else "missing")
+    stock_exists  = minio.partition_exists(minio.market_data_bucket, stock_prefix)
+    crypto_exists = minio.partition_exists(minio.market_data_bucket, crypto_prefix)
 
-    return DataVersionsByPartition(versions)
+    return ObserveResult(
+        metadata={
+            "partition_date":   MetadataValue.text(date),
+            "stock_exists":     MetadataValue.bool(stock_exists),
+            "crypto_exists":    MetadataValue.bool(crypto_exists),
+            "minio_prefix":     MetadataValue.text(
+                f"s3://{minio.market_data_bucket}/price.snapshot/"
+            ),
+        },
+    )
+
+
+@asset_check(
+    asset=price_snapshots,
+    blocking=True,
+    description="Fails when stock price snapshots are absent for the partition date.",
+)
+def price_snapshots_stock_exists(
+    context: AssetCheckExecutionContext,
+    minio: MinioResource,
+) -> AssetCheckResult:
+    date = context.partition_key
+    year, month, day = date[:4], date[5:7], date[8:10]
+    prefix = f"price.snapshot/asset_class=stock/year={year}/month={month}/day={day}/"
+    exists = minio.partition_exists(minio.market_data_bucket, prefix)
+    return AssetCheckResult(
+        passed=exists,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={"partition": date, "prefix": prefix, "exists": exists},
+    )
+
+
+@asset_check(
+    asset=price_snapshots,
+    blocking=False,
+    description="Warns when crypto price snapshots are absent for the partition date.",
+)
+def price_snapshots_crypto_exists(
+    context: AssetCheckExecutionContext,
+    minio: MinioResource,
+) -> AssetCheckResult:
+    date = context.partition_key
+    year, month, day = date[:4], date[5:7], date[8:10]
+    prefix = f"price.snapshot/asset_class=crypto/year={year}/month={month}/day={day}/"
+    exists = minio.partition_exists(minio.market_data_bucket, prefix)
+    return AssetCheckResult(
+        passed=exists,
+        severity=AssetCheckSeverity.WARN,
+        metadata={"partition": date, "prefix": prefix, "exists": exists},
+    )
