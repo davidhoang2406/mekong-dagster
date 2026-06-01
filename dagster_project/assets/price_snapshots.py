@@ -20,7 +20,8 @@ from dagster_project.resources import MinioResource
     },
 )
 def price_snapshots(context: AssetExecutionContext, minio: MinioResource) -> ObserveResult:
-    date       = context.partition_key
+    from datetime import date as _date, timedelta
+    date = context.partition_key if context.has_partition_key else (_date.today() - timedelta(days=1)).isoformat()
     year, month, day = date[:4], date[5:7], date[8:10]
 
     prefix = f"price.snapshot/asset_class=stock/year={year}/month={month}/day={day}/"
