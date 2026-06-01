@@ -1,4 +1,4 @@
-from dagster import AssetExecutionContext, MetadataValue, ObserveResult, observable_source_asset
+from dagster import AssetExecutionContext, AutomationCondition, MetadataValue, ObserveResult, observable_source_asset
 
 from dagster_project.partitions import daily_partitions
 from dagster_project.resources import MinioResource
@@ -6,6 +6,9 @@ from dagster_project.resources import MinioResource
 
 @observable_source_asset(
     partitions_def=daily_partitions,
+    # Auto-observe at 15:00 GMT+7 daily — 1 hour before ohlcv_daily_bars runs.
+    # This gives eager() on downstream assets a valid observation to evaluate against.
+    automation_condition=AutomationCondition.on_cron("0 15 * * *", timezone="Asia/Ho_Chi_Minh"),
     group_name="batch_pipeline",
     description="Raw price snapshots (Avro) produced by StorageConsumer — external to Dagster.",
     metadata={
