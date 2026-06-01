@@ -17,10 +17,10 @@ weekly_screener_job = define_asset_job(
 )
 
 
-# Fires at 16:00 Asia/Ho_Chi_Minh on weekdays — 1 hour after HOSE closes at 15:00.
+# Fires at 16:00 Asia/Ho_Chi_Minh (GMT+7) every day.
 # Partition key is today's date (the day whose market data just closed).
 @schedule(
-    cron_schedule="0 16 * * 1-5",
+    cron_schedule="0 16 * * *",
     job=ohlcv_daily_job,
     execution_timezone="Asia/Ho_Chi_Minh",
 )
