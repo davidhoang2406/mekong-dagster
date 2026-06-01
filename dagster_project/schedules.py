@@ -18,14 +18,14 @@ weekly_screener_job = define_asset_job(
 
 
 # Fires at 16:00 Asia/Ho_Chi_Minh (GMT+7) every day.
-# Partition key is today's date (the day whose market data just closed).
+# Partition key is yesterday's date — previous day's data is now complete.
 @schedule(
     cron_schedule="0 16 * * *",
     job=ohlcv_daily_job,
     execution_timezone="Asia/Ho_Chi_Minh",
 )
 def daily_market_close(context):
-    partition_date = context.scheduled_execution_time.strftime("%Y-%m-%d")
+    partition_date = (context.scheduled_execution_time - timedelta(days=1)).strftime("%Y-%m-%d")
     return RunRequest(partition_key=partition_date)
 
 
