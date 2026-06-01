@@ -48,6 +48,25 @@ class MinioResource(ConfigurableResource):
         except Exception:
             return False
 
+    def day_partition_exists(self, bucket: str, base_prefix: str, year: str, month: str, day: str) -> bool:
+        """True if any object exists for the given Y/M/D under base_prefix.
+
+        StorageConsumer writes <base_prefix>/symbol=<SYM>/year=/month=/day=/, so the
+        symbol level sits between asset_class and the date. List symbol prefixes, then
+        probe each for the date partition and short-circuit on the first hit.
+        """
+        try:
+            client = self._client()
+            for entry in client.list_objects(bucket, prefix=base_prefix, recursive=False):
+                if not entry.is_dir:
+                    continue
+                day_prefix = f"{entry.object_name}year={year}/month={month}/day={day}/"
+                if any(True for _ in client.list_objects(bucket, prefix=day_prefix, recursive=False)):
+                    return True
+            return False
+        except Exception:
+            return False
+
     def object_exists(self, bucket: str, key: str) -> bool:
         from minio.error import S3Error
         try:

@@ -23,14 +23,17 @@ def _ymd(date_str: str) -> tuple[str, str, str]:
     return date_str[:4], date_str[5:7], date_str[8:10]
 
 
-def _stock_prefix(date_str: str) -> str:
-    year, month, day = _ymd(date_str)
-    return f"price.snapshot/asset_class=stock/year={year}/month={month}/day={day}/"
+# StorageConsumer layout: price.snapshot/asset_class=<ac>/symbol=<SYM>/year=/month=/day=/
+_STOCK_BASE = "price.snapshot/asset_class=stock/"
+_CRYPTO_BASE = "price.snapshot/asset_class=crypto/"
 
 
-def _crypto_prefix(date_str: str) -> str:
-    year, month, day = _ymd(date_str)
-    return f"price.snapshot/asset_class=crypto/year={year}/month={month}/day={day}/"
+def _stock_exists(minio: MinioResource, date_str: str) -> bool:
+    return minio.day_partition_exists(minio.market_data_bucket, _STOCK_BASE, *_ymd(date_str))
+
+
+def _crypto_exists(minio: MinioResource, date_str: str) -> bool:
+    return minio.day_partition_exists(minio.market_data_bucket, _CRYPTO_BASE, *_ymd(date_str))
 
 
 @observable_source_asset(
@@ -43,7 +46,7 @@ def _crypto_prefix(date_str: str) -> str:
     metadata={
         "storage": MetadataValue.text("MinIO — market-data bucket"),
         "format": MetadataValue.text("Avro"),
-        "partition_scheme": MetadataValue.text("price.snapshot/asset_class={val}/year={y}/month={m}/day={d}/"),
+        "partition_scheme": MetadataValue.text("price.snapshot/asset_class={val}/symbol={sym}/year={y}/month={m}/day={d}/"),
         "producer": MetadataValue.text("mekong-kafka / StorageConsumer"),
         "asset_classes": MetadataValue.text("stock, crypto"),
     },
@@ -60,8 +63,8 @@ def price_snapshots(minio: MinioResource) -> DataVersionsByPartition:
     today = _date.today()
     for offset in range(1, 8):  # yesterday → 7 days ago
         partition_key = (today - timedelta(days=offset)).isoformat()
-        stock_exists = minio.partition_exists(minio.market_data_bucket, _stock_prefix(partition_key))
-        crypto_exists = minio.partition_exists(minio.market_data_bucket, _crypto_prefix(partition_key))
+        stock_exists = _stock_exists(minio, partition_key)
+        crypto_exists = _crypto_exists(minio, partition_key)
         versions[partition_key] = DataVersion(
             f"stock={'exists' if stock_exists else 'missing'},"
             f"crypto={'exists' if crypto_exists else 'missing'}"
@@ -77,12 +80,11 @@ def price_snapshots(minio: MinioResource) -> DataVersionsByPartition:
 )
 def price_snapshots_stock_exists(minio: MinioResource) -> AssetCheckResult:
     date = _yesterday()
-    prefix = _stock_prefix(date)
-    exists = minio.partition_exists(minio.market_data_bucket, prefix)
+    exists = _stock_exists(minio, date)
     return AssetCheckResult(
         passed=exists,
         severity=AssetCheckSeverity.ERROR,
-        metadata={"partition": date, "prefix": prefix, "exists": exists},
+        metadata={"partition": date, "base_prefix": _STOCK_BASE, "exists": exists},
     )
 
 
@@ -93,10 +95,9 @@ def price_snapshots_stock_exists(minio: MinioResource) -> AssetCheckResult:
 )
 def price_snapshots_crypto_exists(minio: MinioResource) -> AssetCheckResult:
     date = _yesterday()
-    prefix = _crypto_prefix(date)
-    exists = minio.partition_exists(minio.market_data_bucket, prefix)
+    exists = _crypto_exists(minio, date)
     return AssetCheckResult(
         passed=exists,
         severity=AssetCheckSeverity.WARN,
-        metadata={"partition": date, "prefix": prefix, "exists": exists},
+        metadata={"partition": date, "base_prefix": _CRYPTO_BASE, "exists": exists},
     )
