@@ -26,7 +26,8 @@ from dagster_project.resources import MinioResource
     },
 )
 def price_snapshots(context: AssetExecutionContext, minio: MinioResource) -> ObserveResult:
-    date = context.partition_key
+    from datetime import date as _date, timedelta
+    date = context.partition_key if context.has_partition_key else (_date.today() - timedelta(days=1)).isoformat()
     year, month, day = date[:4], date[5:7], date[8:10]
 
     stock_prefix  = f"price.snapshot/asset_class=stock/year={year}/month={month}/day={day}/"
@@ -56,7 +57,8 @@ def price_snapshots_stock_exists(
     context: AssetCheckExecutionContext,
     minio: MinioResource,
 ) -> AssetCheckResult:
-    date = context.partition_key
+    from datetime import date as _date, timedelta
+    date = context.partition_key if context.has_partition_key else (_date.today() - timedelta(days=1)).isoformat()
     year, month, day = date[:4], date[5:7], date[8:10]
     prefix = f"price.snapshot/asset_class=stock/year={year}/month={month}/day={day}/"
     exists = minio.partition_exists(minio.market_data_bucket, prefix)
@@ -76,7 +78,8 @@ def price_snapshots_crypto_exists(
     context: AssetCheckExecutionContext,
     minio: MinioResource,
 ) -> AssetCheckResult:
-    date = context.partition_key
+    from datetime import date as _date, timedelta
+    date = context.partition_key if context.has_partition_key else (_date.today() - timedelta(days=1)).isoformat()
     year, month, day = date[:4], date[5:7], date[8:10]
     prefix = f"price.snapshot/asset_class=crypto/year={year}/month={month}/day={day}/"
     exists = minio.partition_exists(minio.market_data_bucket, prefix)
