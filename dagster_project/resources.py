@@ -45,7 +45,10 @@ class MinioResource(ConfigurableResource):
     def partition_exists(self, bucket: str, prefix: str) -> bool:
         try:
             return any(True for _ in self._client().list_objects(bucket, prefix=prefix, recursive=False))
-        except Exception:
+        except Exception as exc:
+            # A MinIO/connection failure here is indistinguishable from "no data"
+            # to the caller — log it so a misconfigured client isn't read as absent.
+            log.warning("partition_exists failed for %s/%s: %s", bucket, prefix, exc)
             return False
 
     def day_partition_exists(self, bucket: str, base_prefix: str, year: str, month: str, day: str) -> bool:
@@ -64,7 +67,9 @@ class MinioResource(ConfigurableResource):
                 if any(True for _ in client.list_objects(bucket, prefix=day_prefix, recursive=False)):
                     return True
             return False
-        except Exception:
+        except Exception as exc:
+            log.warning("day_partition_exists failed for %s/%s (%s-%s-%s): %s",
+                        bucket, base_prefix, year, month, day, exc)
             return False
 
     def object_exists(self, bucket: str, key: str) -> bool:
@@ -73,8 +78,9 @@ class MinioResource(ConfigurableResource):
             self._client().stat_object(bucket, key)
             return True
         except S3Error:
-            return False
-        except Exception:
+            return False  # normal "not found"
+        except Exception as exc:
+            log.warning("object_exists failed for %s/%s: %s", bucket, key, exc)
             return False
 
     def read_parquet(self, bucket: str, dataset_path: str, filter_expr=None) -> "pa.Table":
