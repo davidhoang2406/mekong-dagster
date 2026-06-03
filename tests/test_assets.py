@@ -34,7 +34,7 @@ def test_technical_calls_submit(mock_submit):
     spark = SparkClusterResource()
     ctx   = build_asset_context(partition_key="2026-05-16")
     technical_indicators(ctx, spark=spark)
-    mock_submit.assert_called_once_with(["technical"])
+    mock_submit.assert_called_once_with(["technical", "--date", "2026-05-16"])
 
 
 # ── SparkClusterResource ──────────────────────────────────────────────────────
