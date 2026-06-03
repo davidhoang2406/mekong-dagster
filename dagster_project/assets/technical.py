@@ -46,10 +46,22 @@ from dagster_project.resources import MinioResource, SparkClusterResource
 def technical_indicators(context: AssetExecutionContext, spark: SparkClusterResource) -> None:
     context.log.info("Running TechnicalJob for partition %s", context.partition_key)
     args = ["technical", "--date", context.partition_key]
-    if context.run.tags.get("full_recompute") == "true":
+    if _run_tag(context, "full_recompute") == "true":
         args.append("--full-recompute")
         context.log.info("Full recompute requested — ignoring checkpoint")
     spark.submit(args)
+
+
+def _run_tag(context: AssetExecutionContext, key: str):
+    """Read a run tag, tolerant of direct invocation where no DagsterRun is attached.
+
+    context.run raises DagsterInvalidPropertyError when the asset is invoked
+    directly (e.g. in unit tests via build_asset_context); treat that as no tag.
+    """
+    try:
+        return context.run.tags.get(key)
+    except Exception:
+        return None
 
 
 @asset_check(
