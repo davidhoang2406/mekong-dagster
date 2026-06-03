@@ -98,12 +98,27 @@ def technical_sma200_completeness(
 
     null_count  = int(pc.sum(pc.is_null(table.column("sma200"))).as_py() or 0)
     null_rate   = null_count / total
+
+    # SMA-200 needs 200 days of history; until the platform has accumulated that
+    # much, all-null sma200 is expected, not a data-quality problem. Only enforce
+    # the null-rate threshold once enough history exists.
+    sma200_window = 200
+    start = date.fromisoformat(daily_partitions.get_partition_keys()[0])
+    days_of_history = (d - start).days + 1
+    enough_history = days_of_history >= sma200_window
+
     return AssetCheckResult(
-        passed=null_rate < 0.80,
+        passed=(not enough_history) or null_rate < 0.80,
         severity=AssetCheckSeverity.WARN,
         metadata={
             "total_rows":  total,
             "sma200_nulls": null_count,
             "null_rate_pct": round(null_rate * 100, 1),
+            "days_of_history": days_of_history,
+            "sma200_window": sma200_window,
+            "note": (
+                "insufficient history for SMA-200 — expected nulls"
+                if not enough_history else "sufficient history; null rate enforced"
+            ),
         },
     )
