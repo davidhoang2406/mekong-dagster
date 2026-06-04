@@ -8,13 +8,16 @@ from dagster_project.partitions import daily_partitions, weekly_partitions
 # technical_indicators and daily_digest no longer rely on AutomationCondition.eager().
 daily_pipeline_job = define_asset_job(
     name="daily_pipeline_job",
-    selection=AssetSelection.assets("ohlcv_daily_bars", "technical_indicators", "daily_digest"),
+    selection=AssetSelection.assets(
+        "ohlcv_daily_bars", "technical_indicators", "daily_digest",
+        "ohlcv_pg_sync", "indicators_pg_sync", "digest_pg_sync",
+    ),
     partitions_def=daily_partitions,
 )
 
 weekly_screener_job = define_asset_job(
     name="weekly_screener_job",
-    selection=AssetSelection.assets("screener_results"),
+    selection=AssetSelection.assets("screener_results", "screener_pg_sync"),
     partitions_def=weekly_partitions,
 )
 
