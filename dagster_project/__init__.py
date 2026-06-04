@@ -2,8 +2,8 @@ import os
 
 from dagster import Definitions, load_asset_checks_from_modules, load_assets_from_modules
 
-from dagster_project.assets import digest, ohlcv, price_snapshots, screener, technical
-from dagster_project.resources import KafkaAdminResource, MinioResource, SparkClusterResource
+from dagster_project.assets import digest, ohlcv, price_snapshots, screener, sync, technical
+from dagster_project.resources import KafkaAdminResource, MinioResource, PostgresResource, SparkClusterResource
 from dagster_project.kafka_pipeline_jobs import (start_kafka_pipeline_job,
                                                   stop_kafka_pipeline_job)
 from dagster_project.schedules import (daily_market_close, daily_pipeline_job,
@@ -12,7 +12,7 @@ from dagster_project.sensors import (kafka_pipeline_health_sensor,
                                       raw_data_expiry_sensor, telegram_failure_sensor,
                                       telegram_success_sensor)
 
-_asset_modules = [price_snapshots, ohlcv, technical, digest, screener]
+_asset_modules = [price_snapshots, ohlcv, technical, digest, screener, sync]
 
 defs = Definitions(
     assets=load_assets_from_modules(_asset_modules),
@@ -30,6 +30,9 @@ defs = Definitions(
         ),
         "kafka_admin": KafkaAdminResource(
             bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092"),
+        ),
+        "pg": PostgresResource(
+            url=os.getenv("PLATFORM_POSTGRES_URL", "postgres://mekong:mekong@platform-postgres.mekong-platform.svc.cluster.local:5432/mekong_api?sslmode=disable"),
         ),
     },
     jobs=[daily_pipeline_job, weekly_screener_job, start_kafka_pipeline_job, stop_kafka_pipeline_job],
