@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+import psycopg2
 from dagster import ConfigurableResource
 from minio import Minio
 
@@ -315,3 +316,10 @@ class SparkClusterResource(ConfigurableResource):
                 log.warning("Poll error for %s: %s", job_name, exc)
 
         raise RuntimeError(f"Spark job {job_name} timed out after 3600s")
+
+
+class PostgresResource(ConfigurableResource):
+    url: str
+
+    def connect(self):
+        return psycopg2.connect(self.url)
