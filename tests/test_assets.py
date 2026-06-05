@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from dagster import build_asset_context
@@ -16,7 +16,7 @@ def test_ohlcv_calls_submit_with_date(mock_submit):
     spark = SparkClusterResource()
     ctx   = build_asset_context(partition_key="2026-05-16")
     ohlcv_daily_bars(ctx, spark=spark)
-    mock_submit.assert_called_once_with(["ohlcv-daily-ingest", "--date", "2026-05-16"])
+    mock_submit.assert_called_once_with(["ohlcv-daily-ingest", "--date", "2026-05-16"], logger=ANY)
 
 
 @patch.object(SparkClusterResource, "submit")
@@ -24,7 +24,7 @@ def test_ohlcv_partition_key_propagates(mock_submit):
     spark = SparkClusterResource()
     ctx   = build_asset_context(partition_key="2026-05-01")
     ohlcv_daily_bars(ctx, spark=spark)
-    mock_submit.assert_called_once_with(["ohlcv-daily-ingest", "--date", "2026-05-01"])
+    mock_submit.assert_called_once_with(["ohlcv-daily-ingest", "--date", "2026-05-01"], logger=ANY)
 
 
 # ── technical_indicators ──────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ def test_technical_calls_submit(mock_submit):
     spark = SparkClusterResource()
     ctx   = build_asset_context(partition_key="2026-05-16")
     technical_indicators(ctx, spark=spark)
-    mock_submit.assert_called_once_with(["technical", "--date", "2026-05-16"])
+    mock_submit.assert_called_once_with(["technical", "--date", "2026-05-16"], logger=ANY)
 
 
 # ── SparkClusterResource ──────────────────────────────────────────────────────
