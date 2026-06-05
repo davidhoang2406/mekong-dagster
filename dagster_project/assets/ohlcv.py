@@ -32,7 +32,7 @@ from dagster_project.resources import MinioResource, SparkClusterResource
 def ohlcv_daily_bars(context: AssetExecutionContext, spark: SparkClusterResource) -> None:
     target_date = context.partition_key
     context.log.info("Running OHLCV ingest for partition %s", target_date)
-    spark.submit(["ohlcv-daily-ingest", "--date", target_date])
+    spark.submit(["ohlcv-daily-ingest", "--date", target_date], logger=context.log)
 
 
 def _ohlcv_filter(partition_key: str):
