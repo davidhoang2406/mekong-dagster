@@ -30,4 +30,4 @@ from dagster_project.resources import SparkClusterResource
 def screener_results(context: AssetExecutionContext, spark: SparkClusterResource) -> None:
     target_date = context.partition_key  # Monday of the week (YYYY-MM-DD)
     context.log.info("Running ScreenerJob for week of %s", target_date)
-    spark.submit(["screener", "--date", target_date])
+    spark.submit(["screener", "--date", target_date], logger=context.log)

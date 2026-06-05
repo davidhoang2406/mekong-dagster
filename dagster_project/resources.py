@@ -228,8 +228,42 @@ class SparkClusterResource(ConfigurableResource):
     namespace: str = "mekong-processing"
     service_account: str = "spark"
 
-    def submit(self, args: list[str]) -> None:
-        """Create a SparkApplication CRD and block until COMPLETED or FAILED."""
+    def _stream_driver_logs(self, job_name: str, logger) -> None:
+        """Tail driver pod logs line-by-line into the Dagster logger."""
+        driver_pod = f"{job_name}-driver"
+        core_api = _k8s().CoreV1Api()
+
+        # Wait up to 5 minutes for driver pod to exist and start.
+        for _ in range(30):
+            try:
+                pod = core_api.read_namespaced_pod(driver_pod, self.namespace)
+                if pod.status.phase in ("Running", "Succeeded", "Failed"):
+                    break
+            except Exception:
+                pass
+            time.sleep(10)
+
+        try:
+            resp = core_api.read_namespaced_pod_log(
+                name=driver_pod,
+                namespace=self.namespace,
+                follow=True,
+                _preload_content=False,
+            )
+            for raw in resp:
+                line = raw.decode("utf-8", errors="replace").rstrip() if isinstance(raw, bytes) else raw.rstrip()
+                if line:
+                    logger.info("[spark] %s", line)
+        except Exception as exc:
+            logger.warning("Spark log stream ended early: %s", exc)
+
+    def submit(self, args: list[str], logger=None) -> None:
+        """Create a SparkApplication CRD and block until COMPLETED or FAILED.
+
+        Pass logger=context.log from a Dagster asset to route Spark driver
+        logs into the Dagster UI instead of stdout only.
+        """
+        logger = logger or log
         k8s = _k8s()
         custom_api = k8s.CustomObjectsApi()
 
@@ -281,7 +315,7 @@ class SparkClusterResource(ConfigurableResource):
             },
         }
 
-        log.info("Creating SparkApplication %s args=%s", job_name, args)
+        logger.info("Creating SparkApplication %s args=%s", job_name, args)
         custom_api.create_namespaced_custom_object(
             group="sparkoperator.k8s.io",
             version="v1beta2",
@@ -292,9 +326,10 @@ class SparkClusterResource(ConfigurableResource):
 
         deadline = time.monotonic() + 3600
         _TERMINAL = {"COMPLETED", "FAILED", "SUBMISSION_FAILED", "INVALIDATING"}
+        log_streamed = False
 
         while time.monotonic() < deadline:
-            time.sleep(30)
+            time.sleep(10)
             try:
                 obj = custom_api.get_namespaced_custom_object(
                     group="sparkoperator.k8s.io",
@@ -304,7 +339,14 @@ class SparkClusterResource(ConfigurableResource):
                     name=job_name,
                 )
                 state = obj.get("status", {}).get("applicationState", {}).get("state") or "UNKNOWN"
-                log.info("SparkApplication %s → %s", job_name, state)
+                logger.info("SparkApplication %s → %s", job_name, state)
+
+                if state == "RUNNING" and not log_streamed:
+                    log_streamed = True
+                    # Stream driver logs — blocks until pod terminates.
+                    self._stream_driver_logs(job_name, logger)
+                    continue  # re-poll for final state after stream ends
+
                 if state == "COMPLETED":
                     return
                 if state in _TERMINAL:
@@ -313,7 +355,7 @@ class SparkClusterResource(ConfigurableResource):
             except RuntimeError:
                 raise
             except Exception as exc:
-                log.warning("Poll error for %s: %s", job_name, exc)
+                logger.warning("Poll error for %s: %s", job_name, exc)
 
         raise RuntimeError(f"Spark job {job_name} timed out after 3600s")
 

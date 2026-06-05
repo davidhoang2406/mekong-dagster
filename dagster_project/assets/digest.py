@@ -33,7 +33,7 @@ from dagster_project.resources import MinioResource, SparkClusterResource
 def daily_digest(context: AssetExecutionContext, spark: SparkClusterResource) -> None:
     target_date = context.partition_key
     context.log.info("Running DigestJob for partition %s", target_date)
-    spark.submit(["digest", "--date", target_date])
+    spark.submit(["digest", "--date", target_date], logger=context.log)
 
 
 @asset_check(

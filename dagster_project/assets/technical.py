@@ -49,7 +49,7 @@ def technical_indicators(context: AssetExecutionContext, spark: SparkClusterReso
     if _run_tag(context, "full_recompute") == "true":
         args.append("--full-recompute")
         context.log.info("Full recompute requested — ignoring checkpoint")
-    spark.submit(args)
+    spark.submit(args, logger=context.log)
 
 
 def _run_tag(context: AssetExecutionContext, key: str):
