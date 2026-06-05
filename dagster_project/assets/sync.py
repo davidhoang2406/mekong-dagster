@@ -54,7 +54,7 @@ def ohlcv_pg_sync(
             row["symbol"],
             row["asset_class"],
             row["exchange"],
-            _str(row["time"]),
+            context.partition_key,  # use partition date — checkpoint skew prevention
             float(row["open"]),
             float(row["high"]),
             float(row["low"]),
@@ -129,7 +129,7 @@ def indicators_pg_sync(
     rows = [
         (
             row["symbol"],
-            _str(row["time"]),
+            context.partition_key,  # use partition date — Spark checkpoint skews row["time"]
             float(row["close"]),
             _float(row.get("sma20")),
             _float(row.get("sma50")),
