@@ -1,6 +1,5 @@
 from datetime import date
 
-import pyarrow.compute as pc
 import pyarrow.dataset as ds
 from dagster import AssetDep, AssetExecutionContext, MetadataValue, RetryPolicy, asset
 from psycopg2.extras import execute_values
@@ -18,12 +17,16 @@ def _day_filter(partition_key: str):
     )
 
 
-def _to_float(val):
-    """Convert PyArrow scalar to Python float or None."""
-    if val is None:
-        return None
-    v = val.as_py() if hasattr(val, "as_py") else val
-    return float(v) if v is not None else None
+def _str(val):
+    return str(val)[:10] if val is not None else None
+
+
+def _float(val):
+    return float(val) if val is not None else None
+
+
+def _int(val):
+    return int(val) if val is not None else None
 
 
 @asset(
@@ -32,9 +35,7 @@ def _to_float(val):
     retry_policy=RetryPolicy(max_retries=2, delay=60),
     group_name="serving_layer",
     description="Syncs OHLCV bars and symbol catalog from MinIO Parquet into Postgres.",
-    metadata={
-        "tables": MetadataValue.text("ohlcv_bars, symbols"),
-    },
+    metadata={"tables": MetadataValue.text("ohlcv_bars, symbols")},
 )
 def ohlcv_pg_sync(
     context: AssetExecutionContext,
@@ -50,20 +51,19 @@ def ohlcv_pg_sync(
 
     bar_rows = [
         (
-            row["symbol"].as_py(),
-            row["asset_class"].as_py(),
-            row["exchange"].as_py(),
-            str(row["time"].as_py())[:10],  # DATE → YYYY-MM-DD
-            float(row["open"].as_py()),
-            float(row["high"].as_py()),
-            float(row["low"].as_py()),
-            float(row["close"].as_py()),
-            int(row["volume"].as_py()),
+            row["symbol"],
+            row["asset_class"],
+            row["exchange"],
+            _str(row["time"]),
+            float(row["open"]),
+            float(row["high"]),
+            float(row["low"]),
+            float(row["close"]),
+            int(row["volume"]),
         )
         for row in table.to_pylist()
     ]
 
-    # Derive symbol catalog rows from this partition
     symbol_rows = {}
     for r in bar_rows:
         sym, ac, ex, t = r[0], r[1], r[2], r[3]
@@ -112,9 +112,7 @@ def ohlcv_pg_sync(
     retry_policy=RetryPolicy(max_retries=2, delay=60),
     group_name="serving_layer",
     description="Syncs technical indicators from MinIO Parquet into Postgres.",
-    metadata={
-        "table": MetadataValue.text("technical_indicators"),
-    },
+    metadata={"table": MetadataValue.text("technical_indicators")},
 )
 def indicators_pg_sync(
     context: AssetExecutionContext,
@@ -130,19 +128,19 @@ def indicators_pg_sync(
 
     rows = [
         (
-            row["symbol"].as_py(),
-            str(row["time"].as_py())[:10],
-            float(row["close"].as_py()),
-            _to_float(row.get("sma20")),
-            _to_float(row.get("sma50")),
-            _to_float(row.get("sma200")),
-            _to_float(row.get("rsi14")),
-            _to_float(row.get("macd")),
-            _to_float(row.get("macd_signal")),
-            _to_float(row.get("macd_hist")),
-            _to_float(row.get("bb_upper")),
-            _to_float(row.get("bb_mid")),
-            _to_float(row.get("bb_lower")),
+            row["symbol"],
+            _str(row["time"]),
+            float(row["close"]),
+            _float(row.get("sma20")),
+            _float(row.get("sma50")),
+            _float(row.get("sma200")),
+            _float(row.get("rsi14")),
+            _float(row.get("macd")),
+            _float(row.get("macd_signal")),
+            _float(row.get("macd_hist")),
+            _float(row.get("bb_upper")),
+            _float(row.get("bb_mid")),
+            _float(row.get("bb_lower")),
         )
         for row in table.to_pylist()
     ]
@@ -179,9 +177,7 @@ def indicators_pg_sync(
     retry_policy=RetryPolicy(max_retries=2, delay=60),
     group_name="serving_layer",
     description="Syncs daily digest rankings from MinIO Parquet into Postgres.",
-    metadata={
-        "table": MetadataValue.text("digest_entries"),
-    },
+    metadata={"table": MetadataValue.text("digest_entries")},
 )
 def digest_pg_sync(
     context: AssetExecutionContext,
@@ -201,16 +197,16 @@ def digest_pg_sync(
 
     rows = [
         (
-            context.partition_key,          # date
-            row["category"].as_py(),
-            int(row["rank"].as_py()),
-            row["symbol"].as_py(),
-            row["exchange"].as_py(),
-            row["asset_class"].as_py(),
-            float(row["open"].as_py()),
-            float(row["close"].as_py()),
-            int(row["volume"].as_py()),
-            float(row["pct_change"].as_py()),
+            context.partition_key,
+            row["category"],
+            int(row["rank"]),
+            row["symbol"],
+            row["exchange"],
+            row["asset_class"],
+            float(row["open"]),
+            float(row["close"]),
+            int(row["volume"]),
+            float(row["pct_change"]),
         )
         for row in table.to_pylist()
     ]
@@ -243,9 +239,7 @@ def digest_pg_sync(
     retry_policy=RetryPolicy(max_retries=2, delay=60),
     group_name="serving_layer",
     description="Syncs weekly screener fundamentals from MinIO Parquet into Postgres.",
-    metadata={
-        "table": MetadataValue.text("screener_results"),
-    },
+    metadata={"table": MetadataValue.text("screener_results")},
 )
 def screener_pg_sync(
     context: AssetExecutionContext,
@@ -267,13 +261,13 @@ def screener_pg_sync(
         (
             year,
             week,
-            row["symbol"].as_py(),
-            _to_float(row.get("pe_ratio")),
-            _to_float(row.get("pb_ratio")),
-            _to_float(row.get("roe")),
-            _to_float(row.get("eps")),
-            _to_float(row.get("de_ratio")),
-            _to_float(row.get("current_ratio")),
+            row["symbol"],
+            _float(row.get("pe_ratio")),
+            _float(row.get("pb_ratio")),
+            _float(row.get("roe")),
+            _float(row.get("eps")),
+            _float(row.get("de_ratio")),
+            _float(row.get("current_ratio")),
         )
         for row in table.to_pylist()
     ]
