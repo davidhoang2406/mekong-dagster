@@ -84,7 +84,7 @@ class MinioResource(ConfigurableResource):
             log.warning("object_exists failed for %s/%s: %s", bucket, key, exc)
             return False
 
-    def read_parquet(self, bucket: str, dataset_path: str, filter_expr=None) -> "pa.Table":
+    def read_parquet(self, bucket: str, dataset_path: str, filter_expr=None, partitioning=None) -> "pa.Table":
         import pyarrow as pa
         import pyarrow.dataset as ds
         import s3fs
@@ -103,15 +103,16 @@ class MinioResource(ConfigurableResource):
         if not parquet_files:
             return pa.table({})
 
-        partitioning = ds.partitioning(
-            pa.schema([
-                ("asset_class", pa.string()),
-                ("year",        pa.string()),
-                ("month",       pa.string()),
-                ("day",         pa.string()),
-            ]),
-            flavor="hive",
-        )
+        if partitioning is None:
+            partitioning = ds.partitioning(
+                pa.schema([
+                    ("asset_class", pa.string()),
+                    ("year",        pa.string()),
+                    ("month",       pa.string()),
+                    ("day",         pa.string()),
+                ]),
+                flavor="hive",
+            )
         dataset = ds.dataset(parquet_files, filesystem=fs, format="parquet", partitioning=partitioning)
         return dataset.to_table(filter=filter_expr)
 

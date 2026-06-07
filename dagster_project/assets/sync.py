@@ -1,5 +1,6 @@
 from datetime import date
 
+import pyarrow as pa
 import pyarrow.dataset as ds
 from dagster import AssetDep, AssetExecutionContext, MetadataValue, RetryPolicy, asset
 from psycopg2.extras import execute_values
@@ -251,8 +252,12 @@ def screener_pg_sync(
     year = str(iso_year)
     week = f"{iso_week:02d}"
 
+    screener_partitioning = ds.partitioning(
+        pa.schema([("year", pa.string()), ("week", pa.string())]),
+        flavor="hive",
+    )
     filter_expr = (ds.field("year") == year) & (ds.field("week") == week)
-    table = minio.read_parquet(minio.market_analysis_bucket, "screener", filter_expr)
+    table = minio.read_parquet(minio.market_analysis_bucket, "screener", filter_expr, screener_partitioning)
     if len(table) == 0:
         context.log.warning("No screener rows for week %s-%s — skipping sync", year, week)
         return
