@@ -9,7 +9,7 @@ from dagster_project.resources import SparkClusterResource
     retry_policy=RetryPolicy(max_retries=2, delay=300),
     group_name="batch_pipeline",
     description=(
-        "Weekly fundamental screener: fetches P/E, ROE, EPS, D/E ratios from vnstock "
+        "Weekly fundamental screener: fetches P/E, P/B, ROE, D/E, Current Ratio from vnstock "
         "and filters tracked stock symbols against config-driven thresholds."
     ),
     metadata={
@@ -22,7 +22,6 @@ from dagster_project.resources import SparkClusterResource
         "thresholds": MetadataValue.json({
             "pe_ratio": "<= 20",
             "roe": ">= 12%",
-            "eps": ">= 1000",
             "de_ratio": "<= 2.0",
         }),
     },

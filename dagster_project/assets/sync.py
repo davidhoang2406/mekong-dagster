@@ -270,7 +270,6 @@ def screener_pg_sync(
             _float(row.get("pe_ratio")),
             _float(row.get("pb_ratio")),
             _float(row.get("roe")),
-            _float(row.get("eps")),
             _float(row.get("de_ratio")),
             _float(row.get("current_ratio")),
         )
@@ -281,13 +280,12 @@ def screener_pg_sync(
         with conn.cursor() as cur:
             execute_values(cur, """
                 INSERT INTO screener_results
-                    (year, week, symbol, pe_ratio, pb_ratio, roe, eps, de_ratio, current_ratio)
+                    (year, week, symbol, pe_ratio, pb_ratio, roe, de_ratio, current_ratio)
                 VALUES %s
                 ON CONFLICT (year, week, symbol) DO UPDATE SET
                     pe_ratio      = EXCLUDED.pe_ratio,
                     pb_ratio      = EXCLUDED.pb_ratio,
                     roe           = EXCLUDED.roe,
-                    eps           = EXCLUDED.eps,
                     de_ratio      = EXCLUDED.de_ratio,
                     current_ratio = EXCLUDED.current_ratio
             """, rows)
