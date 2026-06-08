@@ -76,10 +76,17 @@ def price_snapshots(minio: MinioResource) -> DataVersionsByPartition:
 @asset_check(
     asset=price_snapshots,
     blocking=True,
-    description="Fails when stock price snapshots are absent for yesterday's partition.",
+    description="Fails when stock price snapshots are absent for yesterday's partition. Skipped on weekends.",
 )
 def price_snapshots_stock_exists(minio: MinioResource) -> AssetCheckResult:
-    date = _yesterday()
+    yesterday = _date.today() - timedelta(days=1)
+    date = yesterday.isoformat()
+    if yesterday.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return AssetCheckResult(
+            passed=True,
+            severity=AssetCheckSeverity.ERROR,
+            metadata={"partition": date, "skipped_reason": "weekend — stock market closed"},
+        )
     exists = _stock_exists(minio, date)
     return AssetCheckResult(
         passed=exists,
